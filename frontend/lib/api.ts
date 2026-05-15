@@ -199,3 +199,122 @@ export type AgreementResponse = {
   per_annotator: AgreementAnnotator[];
   levels: string[];
 };
+
+// ===== B.2 dimension slice =====
+export type DimensionPromptInfo = {
+  id: number;
+  version_tag: string;
+  notes: string | null;
+};
+
+export type DimensionStats = {
+  total_cases: number;
+  applicable_count: number;
+  trigger_rate: number | null;
+  avg_score: number | null;
+  min_score: number | null;
+  max_score: number | null;
+  pass_count: number;
+  pass_rate: number | null;
+};
+
+export type DimensionHistBucket = {
+  bucket: string;
+  count: number;
+};
+
+export type DimensionTopBadcase = {
+  case_id: number;
+  conversation_id_src: string;
+  dim_score: number | null;
+  weighted_score: number | null;
+  explanation: string | null;
+};
+
+export type DimensionIssueCluster = {
+  key: string;
+  count: number;
+};
+
+export type DimensionSliceResponse = {
+  dim_code: string;
+  dim_name: string;
+  weight: number;
+  prompt_version: DimensionPromptInfo | null;
+  stats: DimensionStats;
+  histogram: DimensionHistBucket[];
+  top_badcases: DimensionTopBadcase[];
+  issue_clusters: DimensionIssueCluster[];
+};
+
+// ===== B.1 badcase types =====
+export type BadcaseTag = {
+  id: number;
+  tag: string;
+  is_confirmed: boolean;
+  added_to_regression: boolean;
+  notes: string | null;
+  created_at: string;
+};
+
+export type BadcaseListItem = {
+  case_id: number;
+  conversation_id: number;
+  conversation_id_src: string;
+  weighted_score: number | null;
+  lowest_dim_code: string | null;
+  dim_scores: Record<string, number | null>;
+  tags: BadcaseTag[];
+  preview_query: string;
+};
+
+export type BadcaseFacet = { tag: string; count: number };
+
+export type BadcaseStats = {
+  total_cases: number;
+  below_threshold: number;
+  tagged: number;
+  confirmed: number;
+};
+
+export type BadcaseListResponse = {
+  total: number;
+  items: BadcaseListItem[];
+  tag_facets: BadcaseFacet[];
+  stats: BadcaseStats;
+};
+
+export type CaseFullTurn = {
+  turn_index: number;
+  user_query: string;
+  rewritten_query: string | null;
+  timestamp: string | null;
+};
+
+export type CaseFullTurnResult = {
+  turn_index: number;
+  dimension_code: string;
+  score: number | null;
+  applicable: boolean | null;
+  judge_raw_response: Record<string, unknown> | null;
+};
+
+export type CaseConversationMeta = {
+  dimension_tag: string | null;
+  quality_label: string | null;
+  issue_type: string | null;
+};
+
+export type CaseFullDetail = {
+  case_id: number;
+  conversation_id: number;
+  conversation_id_src: string;
+  weighted_score: number | null;
+  lowest_dim_code: string | null;
+  dim_scores: Record<string, number | null>;
+  turns: CaseFullTurn[];
+  dim_results_full: Record<string, unknown>;
+  turn_results: CaseFullTurnResult[];
+  tags: BadcaseTag[];
+  conversation_meta: CaseConversationMeta;
+};

@@ -35,6 +35,13 @@ class HumanAnnotation(Base):
 
 class BadcaseTag(Base):
     __tablename__ = "badcase_tag"
+    # B.1 reviewer P1：同一 case 内同名 tag 唯一（避免重复 POST 创建多行）
+    __table_args__ = (
+        UniqueConstraint(
+            "eval_case_result_id", "tag",
+            name="uq_badcase_case_tag",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     eval_case_result_id: Mapped[int] = mapped_column(

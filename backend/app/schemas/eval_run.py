@@ -55,3 +55,51 @@ class EvalRunDashboard(BaseModel):
     run: EvalRunOut
     dimension_summary: list[DimensionSummary]
     score_distribution: dict[str, int]  # bucket -> count
+
+
+# ===== B.2 dimension slice =====
+
+class DimensionPromptInfo(BaseModel):
+    id: int
+    version_tag: str
+    notes: str | None = None
+
+
+class DimensionStats(BaseModel):
+    total_cases: int
+    applicable_count: int
+    trigger_rate: float | None
+    avg_score: float | None
+    min_score: float | None
+    max_score: float | None
+    pass_count: int
+    pass_rate: float | None
+
+
+class DimensionHistBucket(BaseModel):
+    bucket: str
+    count: int
+
+
+class DimensionTopBadcase(BaseModel):
+    case_id: int
+    conversation_id_src: str
+    dim_score: float | None
+    weighted_score: float | None
+    explanation: str | None
+
+
+class DimensionIssueCluster(BaseModel):
+    key: str
+    count: int
+
+
+class DimensionSliceResponse(BaseModel):
+    dim_code: str
+    dim_name: str
+    weight: float
+    prompt_version: DimensionPromptInfo | None
+    stats: DimensionStats
+    histogram: list[DimensionHistBucket]
+    top_badcases: list[DimensionTopBadcase]
+    issue_clusters: list[DimensionIssueCluster]

@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.api import datasets, bots, judge_config, eval_runs, sse, comparisons, annotations
+from app.api import datasets, bots, judge_config, eval_runs, sse, comparisons, annotations, badcases
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -32,3 +32,4 @@ app.include_router(eval_runs.router)
 app.include_router(sse.router)
 app.include_router(comparisons.router)
 app.include_router(annotations.router)
+app.include_router(badcases.router)
