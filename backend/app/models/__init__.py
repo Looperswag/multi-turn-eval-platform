@@ -4,6 +4,7 @@ from .bot import BotVersion, BotRewrite
 from .judge import JudgePromptVersion, JudgeModel
 from .eval_run import EvalRun, EvalCaseResult, EvalTurnResult
 from .annotation import HumanAnnotation, BadcaseTag
+from .comparison import Comparison
 
 __all__ = [
     "Dataset",
@@ -18,4 +19,5 @@ __all__ = [
     "EvalTurnResult",
     "HumanAnnotation",
     "BadcaseTag",
+    "Comparison",
 ]

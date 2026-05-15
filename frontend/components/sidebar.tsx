@@ -12,8 +12,10 @@ const NAV: NavItem[] = [
   { section: "配置", href: "/judge-config/models", label: "Judge 模型" },
   { section: "评测", href: "/eval-runs", label: "评测任务" },
   { section: "评测", href: "/eval-runs/new", label: "新建评测" },
+  { section: "对比", href: "/comparisons", label: "对比列表" },
   { section: "对比", href: "/comparisons/new", label: "新建对比" },
   { section: "标注", href: "/annotations", label: "标注工作台" },
+  { section: "标注", href: "/annotations/agreement", label: "一致率看板" },
 ];
 
 export function Sidebar() {

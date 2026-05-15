@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import ForeignKey, String, Text, DateTime, Float, Boolean
+from sqlalchemy import ForeignKey, String, Text, DateTime, Float, Boolean, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -7,6 +7,13 @@ from app.core.db import Base
 
 class HumanAnnotation(Base):
     __tablename__ = "human_annotation"
+    # Spec-10：同一 annotator 对同 (conv, dim) 只允许 1 行，UPSERT 覆盖
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id", "dimension_code", "annotator",
+            name="uq_annot_conv_dim_anno",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     conversation_id: Mapped[int] = mapped_column(
