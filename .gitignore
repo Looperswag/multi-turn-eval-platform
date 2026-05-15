@@ -1,0 +1,33 @@
+# --- macOS ---
+.DS_Store
+*.swp
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+*.log
+
+# --- Env / Secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Editor ---
+.idea/
+.vscode/
+
+# --- Docker volumes (本机) ---
+pgdata/
+
+# --- Worktrees（Skill 标准目录） ---
+.claude/worktrees/
