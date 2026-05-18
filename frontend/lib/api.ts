@@ -58,6 +58,31 @@ export type EvalRunDashboard = {
   score_distribution: Record<string, number>;
 };
 
+// ===== C.3 SSE live progress =====
+export type LiveProgressEvent = {
+  event:
+    | "run_started"
+    | "case_completed"
+    | "case_failed"
+    | "run_finished"
+    | "run_failed"
+    | "run_cancelled";
+  completed?: number;
+  failed?: number;
+  total?: number;
+  eta_seconds?: number | null;
+  conversation_id?: number;
+  dim_scores?: Record<string, number | null>;
+  error_message?: string;
+  case_id?: number;
+  status?: string;
+  weighted_score?: number | null;
+  pass_rate?: number | null;
+  reason?: string;
+  retry?: boolean;
+  retry_count?: number;
+};
+
 // ===== A.5.1 comparison types =====
 export type DiffPoint = {
   field: string;
@@ -317,4 +342,42 @@ export type CaseFullDetail = {
   turn_results: CaseFullTurnResult[];
   tags: BadcaseTag[];
   conversation_meta: CaseConversationMeta;
+};
+
+// ===== C.2 regression set types =====
+export type RegressionSetOut = {
+  id: number;
+  name: string;
+  description: string | null;
+  created_at: string;
+  item_count: number;
+};
+
+export type RegressionSetItemOut = {
+  id: number;
+  conversation_id: number;
+  conversation_id_src: string | null;
+  dimension_tag: string | null;
+  source_case_id: number | null;
+  added_at: string;
+};
+
+export type RegressionSetDetail = {
+  id: number;
+  name: string;
+  description: string | null;
+  created_at: string;
+  items: RegressionSetItemOut[];
+};
+
+export type RegressionSetAddItemsResult = {
+  added: number;
+  skipped: number;
+  items: RegressionSetItemOut[];
+};
+
+export type RegressionSetFromBadcasesResult = {
+  added: number;
+  skipped: number;
+  matched_cases: number;
 };

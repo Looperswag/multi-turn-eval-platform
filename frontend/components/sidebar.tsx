@@ -8,6 +8,7 @@ type NavItem = { href: string; label: string; section: string };
 const NAV: NavItem[] = [
   { section: "数据", href: "/datasets", label: "评测集" },
   { section: "数据", href: "/bot-versions", label: "Bot 版本" },
+  { section: "数据", href: "/regression-sets", label: "回归集" },
   { section: "配置", href: "/judge-config/prompts", label: "Prompt 版本" },
   { section: "配置", href: "/judge-config/models", label: "Judge 模型" },
   { section: "评测", href: "/eval-runs", label: "评测任务" },

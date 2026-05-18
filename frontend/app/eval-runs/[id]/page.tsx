@@ -46,9 +46,16 @@ export default async function EvalRunDashboardPage({ params }: { params: { id: s
       </div>
       <p className="text-ink-2 mb-8">{run.description || "—"}</p>
 
-      {/* 实时进度（仅 pending/running 时展示） */}
-      {(run.status === "pending" || run.status === "running") && (
-        <LiveProgress runId={run.id} initial={{ completed: run.completed, total: run.total, failed: run.failed }} />
+      {/* 实时进度：pending/running 期间持续订阅 SSE；
+          partial/failed 终态且仍有失败 case 时，挂载组件以暴露"重试失败"按钮。 */}
+      {(run.status === "pending" ||
+        run.status === "running" ||
+        ((run.status === "partial" || run.status === "failed") && run.failed > 0)) && (
+        <LiveProgress
+          runId={run.id}
+          initial={{ completed: run.completed, total: run.total, failed: run.failed }}
+          status={run.status as "pending" | "running" | "success" | "partial" | "failed" | "cancelled"}
+        />
       )}
 
       <section className="grid grid-cols-3 gap-6 mb-10">
@@ -136,12 +143,29 @@ export default async function EvalRunDashboardPage({ params }: { params: { id: s
 
       <div className="flex gap-3 flex-wrap">
         {canExport && (
-          <a
-            href={`${BROWSER_API_BASE}/api/eval-runs/${run.id}/export`}
-            className="inline-flex items-center px-4 py-2 bg-moss text-white text-sm font-medium rounded hover:opacity-90 transition-opacity no-underline"
-          >
-            ⬇ 导出 Excel
-          </a>
+          <>
+            <a
+              href={`${BROWSER_API_BASE}/api/eval-runs/${run.id}/export?format=xlsx`}
+              className="inline-flex items-center px-4 py-2 bg-moss text-white text-sm font-medium rounded hover:opacity-90 transition-opacity no-underline"
+              title="完整 4-sheet 报告（含原始返回片段）"
+            >
+              ⬇ 导出 Excel
+            </a>
+            <a
+              href={`${BROWSER_API_BASE}/api/eval-runs/${run.id}/export?format=md`}
+              className="inline-flex items-center px-4 py-2 border border-[var(--rule-strong)] text-sm font-medium rounded hover:bg-moss hover:text-white hover:border-moss no-underline transition-colors"
+              title="Markdown 报告（UTF-8，含中文）"
+            >
+              ⬇ 导出 MD
+            </a>
+            <a
+              href={`${BROWSER_API_BASE}/api/eval-runs/${run.id}/export?format=pdf`}
+              className="inline-flex items-center px-4 py-2 border border-[var(--rule-strong)] text-sm font-medium rounded hover:bg-moss hover:text-white hover:border-moss no-underline transition-colors"
+              title="简易 PDF 报告（中文以 ? 占位，建议正式分发用 MD/Excel）"
+            >
+              ⬇ 导出 PDF
+            </a>
+          </>
         )}
         <Link
           href={`/eval-runs/${run.id}/badcases`}

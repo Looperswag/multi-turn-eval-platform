@@ -16,6 +16,8 @@ from app.models import (
     EvalRun,
     EvalTurnResult,
     JudgePromptVersion,
+    RegressionSet,
+    RegressionSetItem,
     Turn,
 )
 from app.schemas.badcase import (
@@ -41,7 +43,11 @@ from app.schemas.eval_run import (
     EvalRunDashboard,
     EvalRunOut,
 )
-from app.services.exporter import export_eval_run_xlsx
+from app.services.exporter import (
+    export_eval_run_md,
+    export_eval_run_pdf,
+    export_eval_run_xlsx,
+)
 from app.services.scoring import PASS_THRESHOLD, aggregate_dimension_summary
 
 router = APIRouter(prefix="/api/eval-runs", tags=["eval-runs"])
@@ -52,13 +58,86 @@ def list_runs(db: Session = Depends(get_db)):
     return db.query(EvalRun).order_by(EvalRun.created_at.desc()).all()
 
 
+_VALID_DIM_CODES = {"dim1", "dim2", "dim3", "dim4", "dim5", "dim6"}
+
+
+def _validate_dimension_weights(
+    weights: dict[str, float] | None,
+    dimensions_selected: list[str],
+) -> dict[str, float] | None:
+    """校验 dimension_weights：
+    - None → 不指定，scoring fallback DEFAULT
+    - 键必须 ⊆ dim1..dim6
+    - 值必须 ≥ 0
+    - 所有"已选维度"必须出现且至少一个 >0（否则 weighted_score 永远是 None）
+
+    返回规范化后的 dict（删去未选维度的多余 key）。
+    """
+    if weights is None:
+        return None
+    cleaned: dict[str, float] = {}
+    for k, v in weights.items():
+        if k not in _VALID_DIM_CODES:
+            raise HTTPException(400, f"invalid dimension code in weights: {k!r}")
+        if v is None:
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, f"weight for {k!r} not numeric: {v!r}") from exc
+        if fv < 0:
+            raise HTTPException(400, f"weight for {k!r} must be >= 0, got {fv}")
+        cleaned[k] = fv
+
+    # 检查已选维度都有权重，且总和 > 0
+    selected_total = sum(cleaned.get(d, 0.0) for d in dimensions_selected)
+    if selected_total <= 0:
+        raise HTTPException(
+            400,
+            "dimension_weights 在所有已选维度上的总和必须 > 0（否则 weighted_score 无意义）",
+        )
+    return cleaned
+
+
 @router.post("", response_model=EvalRunOut)
 def create_run(payload: EvalRunCreate, db: Session = Depends(get_db)):
-    total = db.query(Conversation).filter(Conversation.dataset_id == payload.dataset_id).count()
-    if payload.sampling_count and payload.sampling_count < total:
-        total = payload.sampling_count
+    # 校验 dimension_weights（None 留空走默认；否则强校验）
+    cleaned_weights = _validate_dimension_weights(
+        payload.dimension_weights, payload.dimensions_selected
+    )
+    # C.2：若指定回归集，total = 集合内 conversation 与 dataset 的交集大小
+    if payload.regression_set_id is not None:
+        rs = db.get(RegressionSet, payload.regression_set_id)
+        if rs is None:
+            raise HTTPException(400, f"regression_set id={payload.regression_set_id} 不存在")
+        total = (
+            db.query(RegressionSetItem)
+            .join(Conversation, Conversation.id == RegressionSetItem.conversation_id)
+            .filter(
+                RegressionSetItem.regression_set_id == payload.regression_set_id,
+                Conversation.dataset_id == payload.dataset_id,
+            )
+            .count()
+        )
+        # C.2 reviewer P1: 空交集 → 400（避免 task 静默 "success" with 0 cases）
+        if total == 0:
+            raise HTTPException(
+                400,
+                f"回归集 #{payload.regression_set_id} 与 dataset #{payload.dataset_id} 无交集 "
+                "（集合内没有任何 conversation 属于此 dataset）；请改选其他 dataset 或往集合内添加 conversation",
+            )
+    else:
+        total = (
+            db.query(Conversation)
+            .filter(Conversation.dataset_id == payload.dataset_id)
+            .count()
+        )
+        if payload.sampling_count and payload.sampling_count < total:
+            total = payload.sampling_count
+    run_kwargs = payload.model_dump()
+    run_kwargs["dimension_weights"] = cleaned_weights
     run = EvalRun(
-        **payload.model_dump(),
+        **run_kwargs,
         status="pending",
         total=total,
     )
@@ -126,6 +205,43 @@ def cancel_run(run_id: int, db: Session = Depends(get_db)):
     run.finished_at = datetime.utcnow()
     db.commit()
     return {"status": "cancelled"}
+
+
+@router.post("/{run_id}/retry-failed")
+def retry_failed(run_id: int, db: Session = Depends(get_db)):
+    """C.3：重跑当前 run 中所有失败的 case（仅评失败 conv 子集）。
+
+    流程：
+    1. 找出该 run 中 error IS NOT NULL 的 case
+    2. enqueue retry_failed_cases task —— 在 worker 中删除失败 case 并重跑
+    """
+    run = db.get(EvalRun, run_id)
+    if not run:
+        raise HTTPException(404, "eval run not found")
+    if run.status == "running":
+        raise HTTPException(409, "run is currently running; cancel it first")
+
+    failed_cases = (
+        db.query(EvalCaseResult)
+        .filter(
+            EvalCaseResult.eval_run_id == run_id,
+            EvalCaseResult.error.is_not(None),
+        )
+        .all()
+    )
+    if not failed_cases:
+        return {"queued": 0, "message": "no failed cases to retry"}
+
+    conv_ids = [c.conversation_id for c in failed_cases]
+
+    from app.tasks.eval_tasks import retry_failed_cases as retry_task
+
+    retry_task.delay(run_id, conv_ids)
+    return {
+        "queued": len(conv_ids),
+        "conversation_ids": conv_ids,
+        "message": f"retry enqueued for {len(conv_ids)} failed cases",
+    }
 
 
 @router.get("/{run_id}/cases")
@@ -244,9 +360,11 @@ def list_badcases(
             tags_by_case[t.eval_case_result_id].append(t)
 
     # ---------- stats ----------
+    # B.1 deferred fix: below_threshold 按请求 score_max 动态计算，
+    # 不再硬编码 PASS_THRESHOLD=0.6（保持 stats 与列表过滤口径一致）。
     total_cases = len(all_cases)
     below_threshold = sum(
-        1 for c in all_cases if (c.weighted_score is not None and c.weighted_score < PASS_THRESHOLD)
+        1 for c in all_cases if (c.weighted_score is not None and c.weighted_score < score_max)
     )
     tagged_ids = {cid for cid, ts in tags_by_case.items() if ts}
     confirmed_ids = {
@@ -275,13 +393,15 @@ def list_badcases(
     )
 
     # ---------- 过滤 ----------
+    # C.1 reviewer P1: 与 below_threshold 边界对齐 —— 都用严格小于 score_max
+    # （等于 score_max 的 case 不视为"低于阈值"也不出现在列表中）
     def _passes(case: EvalCaseResult) -> bool:
         score = (
             _case_dim_score(case, dim_filter) if dim_filter else case.weighted_score
         )
         if score is None:
             return False
-        if score > score_max:
+        if score >= score_max:
             return False
         return True
 
@@ -462,9 +582,9 @@ def get_case_full(run_id: int, case_id: int, db: Session = Depends(get_db)):
 
 @router.get("/{run_id}/export")
 def export_run(run_id: int, format: str = "xlsx", db: Session = Depends(get_db)):
-    """导出评测报告。当前仅支持 xlsx（4-sheet）。"""
-    if format != "xlsx":
-        raise HTTPException(400, "only xlsx supported in W1.5")
+    """导出评测报告。支持 xlsx (4-sheet) / md (markdown) / pdf (latin-1 fallback)。"""
+    if format not in ("xlsx", "md", "pdf"):
+        raise HTTPException(400, "format must be xlsx / md / pdf")
     run = db.get(EvalRun, run_id)
     if not run:
         raise HTTPException(404, "run not found")
@@ -474,14 +594,27 @@ def export_run(run_id: int, format: str = "xlsx", db: Session = Depends(get_db))
             f"run status is '{run.status}', only success/partial runs can be exported",
         )
     try:
-        content = export_eval_run_xlsx(db, run_id)
+        if format == "xlsx":
+            content = export_eval_run_xlsx(db, run_id)
+            media_type = (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            ext = "xlsx"
+        elif format == "md":
+            content = export_eval_run_md(db, run_id)
+            media_type = "text/markdown; charset=utf-8"
+            ext = "md"
+        else:  # pdf
+            content = export_eval_run_pdf(db, run_id)
+            media_type = "application/pdf"
+            ext = "pdf"
     except ValueError:
         raise HTTPException(404, "run not found")
-    filename = f"eval_run_{run_id}.xlsx"
+    filename = f"eval_run_{run_id}.{ext}"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return StreamingResponse(
         io.BytesIO(content),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        media_type=media_type,
         headers=headers,
     )
 

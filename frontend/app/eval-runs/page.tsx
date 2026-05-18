@@ -105,11 +105,12 @@ export default async function EvalRunsPage() {
                       {new Date(r.created_at).toLocaleString()}
                     </td>
                     <td className="px-5 py-3 text-right">
+                      {/* 列表导出仅 xlsx; 详情页可选 md/pdf */}
                       {canExport ? (
                         <a
-                          href={`${BROWSER_API_BASE}/api/eval-runs/${r.id}/export`}
+                          href={`${BROWSER_API_BASE}/api/eval-runs/${r.id}/export?format=xlsx`}
                           className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-[var(--rule-strong)] rounded hover:bg-moss hover:text-white hover:border-moss no-underline transition-colors"
-                          title="导出 Excel 报告"
+                          title="导出 Excel 报告（详情页可选 MD/PDF）"
                         >
                           导出
                         </a>

@@ -107,12 +107,40 @@ def _next_version_tag(db: Session, dimension_code: str, source_tag: str) -> str:
     return f"{source_tag}_clone_{n}"
 
 
+def _build_prompt_usage_map(db: Session) -> dict[int, int]:
+    """一次扫所有 EvalRun.judge_prompt_version_ids，得到 {prompt_version_id: in_use_count}。
+
+    比逐 prompt 调 `_count_prompt_in_use` (O(P×R)) 高效一点，列表渲染时只调一次。
+    """
+    out: dict[int, int] = {}
+    for run in db.query(EvalRun.judge_prompt_version_ids).all():
+        ids = run[0] or {}
+        if not isinstance(ids, dict):
+            continue
+        for v in ids.values():
+            try:
+                pv_id = int(v)
+            except (TypeError, ValueError):
+                continue
+            out[pv_id] = out.get(pv_id, 0) + 1
+    return out
+
+
 @router.get("/prompts", response_model=list[JudgePromptVersionOut])
 def list_prompts(dimension_code: str | None = None, db: Session = Depends(get_db)):
     q = db.query(JudgePromptVersion)
     if dimension_code:
         q = q.filter(JudgePromptVersion.dimension_code == dimension_code)
-    return q.order_by(JudgePromptVersion.dimension_code, JudgePromptVersion.created_at.desc()).all()
+    prompts = q.order_by(
+        JudgePromptVersion.dimension_code, JudgePromptVersion.created_at.desc()
+    ).all()
+    usage = _build_prompt_usage_map(db)
+    out: list[JudgePromptVersionOut] = []
+    for p in prompts:
+        item = JudgePromptVersionOut.model_validate(p)
+        item.in_use_count = usage.get(p.id, 0)
+        out.append(item)
+    return out
 
 
 @router.get("/prompts/{prompt_id}", response_model=JudgePromptVersionDetail)
@@ -120,7 +148,9 @@ def get_prompt(prompt_id: int, db: Session = Depends(get_db)):
     obj = db.get(JudgePromptVersion, prompt_id)
     if not obj:
         raise HTTPException(404, "prompt not found")
-    return obj
+    detail = JudgePromptVersionDetail.model_validate(obj)
+    detail.in_use_count = _count_prompt_in_use(db, obj)
+    return detail
 
 
 @router.post("/prompts", response_model=JudgePromptVersionOut)

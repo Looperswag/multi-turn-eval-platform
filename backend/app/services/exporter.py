@@ -443,3 +443,370 @@ def _build_sheet_turn_detail(db: Session, wb, cases, conv_src_map) -> None:
     ws.column_dimensions["E"].width = 10
     ws.column_dimensions["F"].width = 8
     ws.column_dimensions["G"].width = 60
+
+
+# ============================================================================
+# Markdown export (C.1)
+# ============================================================================
+
+
+def _md_pct(v: float | None) -> str:
+    return f"{v * 100:.1f}%" if v is not None else "-"
+
+
+def _md_num(v: Any, digits: int = 4) -> str:
+    if v is None:
+        return "-"
+    if isinstance(v, float):
+        return f"{round(v, digits)}"
+    return str(v)
+
+
+def _md_escape(s: str | None) -> str:
+    """转义 Markdown 表格中破坏排版的字符（| 与换行）。"""
+    if s is None:
+        return "-"
+    return str(s).replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+
+
+def export_eval_run_md(db: Session, eval_run_id: int) -> bytes:
+    """Markdown 4-section report，UTF-8 编码字节流。
+
+    Section: 标题/元信息 → 维度汇总表 → 会话明细表（低分前若干）→ 低分前 5 case 备注
+    """
+    run = db.get(EvalRun, eval_run_id)
+    if not run:
+        raise ValueError(f"eval run {eval_run_id} not found")
+
+    cases = (
+        db.query(EvalCaseResult)
+        .filter(EvalCaseResult.eval_run_id == eval_run_id)
+        .all()
+    )
+    dataset = db.get(Dataset, run.dataset_id) if run.dataset_id else None
+    bot = db.get(BotVersion, run.bot_version_id) if run.bot_version_id else None
+    judge = db.get(JudgeModel, run.judge_model_id) if run.judge_model_id else None
+
+    conv_ids = [c.conversation_id for c in cases]
+    conv_src_map: dict[int, str] = {}
+    if conv_ids:
+        for conv in db.query(Conversation).filter(Conversation.id.in_(conv_ids)).all():
+            conv_src_map[conv.id] = conv.conversation_id_src
+
+    case_dicts = [
+        {f"{code}_score": getattr(c, f"{code}_score") for code in DIM_CODES}
+        for c in cases
+    ]
+    dim_summary = aggregate_dimension_summary(case_dicts, DIM_CODES)
+    summary_by_code = {row["dimension_code"]: row for row in dim_summary}
+
+    lines: list[str] = []
+
+    # ---- Section 1: 标题 + 元信息 ----
+    lines.append(f"# 多轮对话评测报告 — {run.name}")
+    lines.append("")
+    lines.append(f"> Run ID: `#{run.id}` · 状态：**{run.status}**")
+    lines.append("")
+    if run.description:
+        lines.append(f"{run.description}")
+        lines.append("")
+
+    lines.append("## 1. 评测元信息")
+    lines.append("")
+    info_rows = [
+        ("评测名称", run.name),
+        ("状态", run.status),
+        (
+            "创建时间",
+            run.created_at.strftime("%Y-%m-%d %H:%M:%S") if run.created_at else "-",
+        ),
+        (
+            "开始时间",
+            run.started_at.strftime("%Y-%m-%d %H:%M:%S") if run.started_at else "-",
+        ),
+        (
+            "结束时间",
+            run.finished_at.strftime("%Y-%m-%d %H:%M:%S") if run.finished_at else "-",
+        ),
+        ("Dataset", f"#{dataset.id} · {dataset.name}" if dataset else f"#{run.dataset_id}"),
+        (
+            "Bot 版本",
+            f"#{bot.id} · {bot.name} ({bot.version_tag})" if bot else f"#{run.bot_version_id}",
+        ),
+        (
+            "Judge 模型",
+            f"#{judge.id} · {judge.name} ({judge.provider}/{judge.model_id})"
+            if judge
+            else f"#{run.judge_model_id}",
+        ),
+        ("采样数 / 总数", f"{run.sampling_count or '全量'} / {run.total}"),
+        ("已完成 / 失败", f"{run.completed} / {run.failed}"),
+        ("加权总分", _md_num(run.weighted_score)),
+        ("通过率", _md_pct(run.pass_rate)),
+    ]
+    lines.append("| 字段 | 值 |")
+    lines.append("|------|------|")
+    for k, v in info_rows:
+        lines.append(f"| {_md_escape(k)} | {_md_escape(v)} |")
+    lines.append("")
+
+    # ---- Section 2: 维度汇总 ----
+    lines.append("## 2. 维度汇总")
+    lines.append("")
+    lines.append("| 维度 | 代码 | 权重 | 样本数 | 平均分 | 最低分 | 最高分 | 通过率(≥0.6) |")
+    lines.append("|------|------|------|------:|------:|------:|------:|------:|")
+    for code in DIM_CODES:
+        name = DIMENSION_NAMES.get(code, code)
+        weight = DEFAULT_DIMENSION_WEIGHTS.get(code, 0.0)
+        row = summary_by_code.get(code, {})
+        lines.append(
+            "| {name} | `{code}` | {weight} | {n} | {avg} | {mn} | {mx} | {pr} |".format(
+                name=_md_escape(name),
+                code=code,
+                weight=f"{int(weight * 100)}%",
+                n=row.get("sample_count", 0),
+                avg=_md_num(row.get("avg_score")),
+                mn=_md_num(row.get("min_score")),
+                mx=_md_num(row.get("max_score")),
+                pr=_md_pct(row.get("pass_rate")),
+            )
+        )
+    lines.append("")
+
+    # ---- Section 3: 会话明细（按加权分升序）----
+    lines.append("## 3. 会话明细")
+    lines.append("")
+    sorted_cases = sorted(
+        cases,
+        key=lambda c: (
+            c.weighted_score is None,
+            c.weighted_score if c.weighted_score is not None else 0,
+        ),
+    )
+    header = (
+        "| case_id | 源会话ID | 加权得分 | "
+        + " | ".join(DIMENSION_NAMES.get(code, code) for code in DIM_CODES)
+        + " | 最低维度 |"
+    )
+    sep = "|------:|------|------:|" + ":------:|" * len(DIM_CODES) + "------|"
+    lines.append(header)
+    lines.append(sep)
+    for case in sorted_cases:
+        dim_scores = {code: getattr(case, f"{code}_score") for code in DIM_CODES}
+        valid = {k: v for k, v in dim_scores.items() if v is not None}
+        if valid:
+            min_code = min(valid, key=lambda k: valid[k])
+            min_label = f"{DIMENSION_NAMES.get(min_code, min_code)} ({_md_num(valid[min_code])})"
+        else:
+            min_label = "-"
+        lines.append(
+            "| {cid} | {src} | {w} | {dims} | {minlbl} |".format(
+                cid=case.id,
+                src=_md_escape(conv_src_map.get(case.conversation_id, f"#{case.conversation_id}")),
+                w=_md_num(case.weighted_score),
+                dims=" | ".join(_md_num(dim_scores[c]) for c in DIM_CODES),
+                minlbl=_md_escape(min_label),
+            )
+        )
+    lines.append("")
+
+    # ---- Section 4: 低分前 5 备注 ----
+    lines.append("## 4. 低分 Top-5 备注")
+    lines.append("")
+    low5 = [c for c in sorted_cases if c.weighted_score is not None][:5]
+    if not low5:
+        lines.append("_无可用低分样本（所有 case 加权得分均为空）_")
+        lines.append("")
+    else:
+        for c in low5:
+            src = conv_src_map.get(c.conversation_id, f"#{c.conversation_id}")
+            lines.append(
+                f"### case #{c.id} · 源会话 `{src}` · 加权 {_md_num(c.weighted_score)}"
+            )
+            lines.append("")
+            for code in DIM_CODES:
+                v = getattr(c, f"{code}_score")
+                if v is None:
+                    continue
+                lines.append(f"- **{DIMENSION_NAMES.get(code, code)}** (`{code}`): {_md_num(v)}")
+            note_src = c.error or ""
+            if note_src:
+                lines.append("")
+                note_text = str(note_src)[:300]
+                lines.append(f"> 错误：{note_text}")
+            lines.append("")
+
+    md_text = "\n".join(lines)
+    return md_text.encode("utf-8")
+
+
+# ============================================================================
+# PDF export (C.1) — fpdf2 with latin-1 fallback for CJK
+# ============================================================================
+
+
+def _safe_pdf_text(s: Any) -> str:
+    """将任意字符串转为 latin-1 安全的形式（CJK → '?'）。
+
+    fpdf2 默认字体（helvetica）仅支持 latin-1。完整中文请走 MD/XLSX 版本。
+    """
+    if s is None:
+        return "-"
+    return str(s).encode("latin-1", "replace").decode("latin-1")
+
+
+def export_eval_run_pdf(db: Session, eval_run_id: int) -> bytes:
+    """生成简易 PDF 报告。非 latin-1 字符（中文等）会被替换为 '?'。"""
+    from fpdf import FPDF
+
+    run = db.get(EvalRun, eval_run_id)
+    if not run:
+        raise ValueError(f"eval run {eval_run_id} not found")
+
+    cases = (
+        db.query(EvalCaseResult)
+        .filter(EvalCaseResult.eval_run_id == eval_run_id)
+        .all()
+    )
+    dataset = db.get(Dataset, run.dataset_id) if run.dataset_id else None
+    bot = db.get(BotVersion, run.bot_version_id) if run.bot_version_id else None
+    judge = db.get(JudgeModel, run.judge_model_id) if run.judge_model_id else None
+
+    case_dicts = [
+        {f"{code}_score": getattr(c, f"{code}_score") for code in DIM_CODES}
+        for c in cases
+    ]
+    dim_summary = aggregate_dimension_summary(case_dicts, DIM_CODES)
+    summary_by_code = {row["dimension_code"]: row for row in dim_summary}
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    # ---- Disclaimer / Title ----
+    pdf.set_font("helvetica", "B", 14)
+    pdf.cell(
+        0,
+        9,
+        _safe_pdf_text(f"Eval Run Report #{run.id}: {run.name}"),
+        new_x="LMARGIN",
+        new_y="NEXT",
+    )
+    pdf.set_font("helvetica", "I", 8)
+    pdf.set_text_color(150, 60, 60)
+    pdf.cell(
+        0,
+        5,
+        "Note: non-Latin chars (e.g. Chinese) are replaced with '?'. "
+        "For full CJK content, use the MD or XLSX export.",
+        new_x="LMARGIN",
+        new_y="NEXT",
+    )
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(2)
+
+    # ---- Meta block ----
+    pdf.set_font("helvetica", "B", 11)
+    pdf.cell(0, 6, "1. Run Metadata", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "", 9)
+    meta_rows = [
+        ("Status", run.status),
+        ("Created", run.created_at.strftime("%Y-%m-%d %H:%M:%S") if run.created_at else "-"),
+        ("Started", run.started_at.strftime("%Y-%m-%d %H:%M:%S") if run.started_at else "-"),
+        ("Finished", run.finished_at.strftime("%Y-%m-%d %H:%M:%S") if run.finished_at else "-"),
+        ("Dataset", f"#{dataset.id} {dataset.name}" if dataset else f"#{run.dataset_id}"),
+        (
+            "Bot",
+            f"#{bot.id} {bot.name} ({bot.version_tag})" if bot else f"#{run.bot_version_id}",
+        ),
+        (
+            "Judge",
+            f"#{judge.id} {judge.name} ({judge.provider}/{judge.model_id})"
+            if judge
+            else f"#{run.judge_model_id}",
+        ),
+        ("Sampled/Total", f"{run.sampling_count or 'all'} / {run.total}"),
+        ("Completed/Failed", f"{run.completed} / {run.failed}"),
+        (
+            "Weighted Score",
+            f"{round(run.weighted_score, 4)}" if run.weighted_score is not None else "-",
+        ),
+        (
+            "Pass Rate",
+            f"{run.pass_rate * 100:.1f}%" if run.pass_rate is not None else "-",
+        ),
+    ]
+    for k, v in meta_rows:
+        pdf.cell(45, 5, _safe_pdf_text(k))
+        pdf.cell(0, 5, _safe_pdf_text(v), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(3)
+
+    # ---- Dimension summary table ----
+    pdf.set_font("helvetica", "B", 11)
+    pdf.cell(0, 6, "2. Dimension Summary", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "B", 8)
+    col_w = [38, 14, 13, 14, 16, 16, 16, 18]
+    headers = ["Dimension", "Code", "Weight", "N", "Avg", "Min", "Max", "Pass>=0.6"]
+    for w, h in zip(col_w, headers):
+        pdf.cell(w, 6, _safe_pdf_text(h), border=1, align="C")
+    pdf.ln()
+
+    pdf.set_font("helvetica", "", 8)
+    for code in DIM_CODES:
+        name = DIMENSION_NAMES.get(code, code)
+        weight = DEFAULT_DIMENSION_WEIGHTS.get(code, 0.0)
+        row = summary_by_code.get(code, {})
+        avg = row.get("avg_score")
+        mn = row.get("min_score")
+        mx = row.get("max_score")
+        pr = row.get("pass_rate")
+        n = row.get("sample_count", 0)
+        cells = [
+            name,
+            code,
+            f"{int(weight * 100)}%",
+            str(n),
+            f"{round(avg, 4)}" if avg is not None else "-",
+            f"{round(mn, 4)}" if mn is not None else "-",
+            f"{round(mx, 4)}" if mx is not None else "-",
+            f"{pr * 100:.1f}%" if pr is not None else "-",
+        ]
+        for w, val in zip(col_w, cells):
+            pdf.cell(w, 5, _safe_pdf_text(val), border=1, align="C")
+        pdf.ln()
+    pdf.ln(3)
+
+    # ---- Low 5 cases ----
+    pdf.set_font("helvetica", "B", 11)
+    pdf.cell(0, 6, "3. Lowest 5 Cases", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "", 8)
+    low5 = sorted(
+        [c for c in cases if c.weighted_score is not None],
+        key=lambda c: c.weighted_score,
+    )[:5]
+    if not low5:
+        pdf.cell(0, 5, "(no scored cases)", new_x="LMARGIN", new_y="NEXT")
+    else:
+        cell_w = [16, 22, 18, 18, 18, 18, 18, 18, 18]
+        head = ["case_id", "weighted", "dim1", "dim2", "dim3", "dim4", "dim5", "dim6", "lowest"]
+        pdf.set_font("helvetica", "B", 8)
+        for w, h in zip(cell_w, head):
+            pdf.cell(w, 5, _safe_pdf_text(h), border=1, align="C")
+        pdf.ln()
+        pdf.set_font("helvetica", "", 8)
+        for c in low5:
+            cells = [
+                str(c.id),
+                f"{round(c.weighted_score, 4)}",
+            ]
+            for code in DIM_CODES:
+                v = getattr(c, f"{code}_score")
+                cells.append(f"{round(v, 3)}" if v is not None else "-")
+            cells.append(c.lowest_dim_code or "-")
+            for w, val in zip(cell_w, cells):
+                pdf.cell(w, 5, _safe_pdf_text(val), border=1, align="C")
+            pdf.ln()
+
+    out = pdf.output()
+    # fpdf2 >=2.7 returns bytearray
+    return bytes(out)

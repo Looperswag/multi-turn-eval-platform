@@ -5,6 +5,7 @@ from .judge import JudgePromptVersion, JudgeModel
 from .eval_run import EvalRun, EvalCaseResult, EvalTurnResult
 from .annotation import HumanAnnotation, BadcaseTag
 from .comparison import Comparison
+from .regression_set import RegressionSet, RegressionSetItem
 
 __all__ = [
     "Dataset",
@@ -20,4 +21,6 @@ __all__ = [
     "HumanAnnotation",
     "BadcaseTag",
     "Comparison",
+    "RegressionSet",
+    "RegressionSetItem",
 ]

@@ -3,8 +3,10 @@ import uuid
 from dataclasses import asdict
 
 import redis as redis_sync
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi.responses import Response
+from sqlalchemy import or_
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.config import settings
@@ -65,6 +67,136 @@ def get_conversation(dataset_id: int, conv_id: int, db: Session = Depends(get_db
     if not obj:
         raise HTTPException(404, "conversation not found")
     return obj
+
+
+@router.get("/{dataset_id}/export")
+def export_dataset(dataset_id: int, db: Session = Depends(get_db)):
+    """以 mock_multi_turn_queries 同格式导出整个 dataset 为 JSON 数组下载。
+
+    返回字段对齐源种子（rewritten_query 当前仅 BotRewrite 存，此处恒为 null；
+    query_id 由 {conversation_id_src}_q{turn_index} 重建）。
+    """
+    ds = (
+        db.query(Dataset)
+        .options(selectinload(Dataset.conversations).selectinload(Conversation.turns))
+        .filter(Dataset.id == dataset_id)
+        .first()
+    )
+    if not ds:
+        raise HTTPException(404, "dataset not found")
+
+    payload = []
+    for conv in sorted(ds.conversations, key=lambda c: c.id):
+        payload.append(
+            {
+                "conversation_id": conv.conversation_id_src,
+                "dimension_tag": conv.dimension_tag,
+                "quality_label": conv.quality_label,
+                "issue_type": conv.issue_type,
+                "total_turns": conv.total_turns,
+                "turns": [
+                    {
+                        "query_id": f"{conv.conversation_id_src}_q{t.turn_index}",
+                        "turn_index": t.turn_index,
+                        "timestamp": t.timestamp,
+                        "user_query": t.user_query,
+                        "rewritten_query": None,
+                    }
+                    for t in conv.turns
+                ],
+            }
+        )
+
+    body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    filename = f"{ds.name}_{ds.version}.json"
+    return Response(
+        content=body,
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{dataset_id}/search")
+def search_dataset(
+    dataset_id: int,
+    q: str = Query("", description="模糊搜索关键字"),
+    limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """在 conversation_id_src / dimension_tag / issue_type / quality_label / turn.user_query
+    上做 ILIKE 匹配，返回会话列表 + 命中 turn 摘要。空 q 等价于列出全部（截到 limit）。
+    """
+    ds = db.get(Dataset, dataset_id)
+    if not ds:
+        raise HTTPException(404, "dataset not found")
+
+    q_strip = (q or "").strip()
+
+    base = db.query(Conversation).filter(Conversation.dataset_id == dataset_id)
+
+    if q_strip:
+        like = f"%{q_strip}%"
+        # 用 EXISTS 子查询匹配 turn.user_query，避免 join 后行膨胀
+        turn_match = (
+            db.query(Turn.id)
+            .filter(
+                Turn.conversation_id == Conversation.id,
+                Turn.user_query.ilike(like),
+            )
+            .exists()
+        )
+        base = base.filter(
+            or_(
+                Conversation.conversation_id_src.ilike(like),
+                Conversation.dimension_tag.ilike(like),
+                Conversation.issue_type.ilike(like),
+                Conversation.quality_label.ilike(like),
+                turn_match,
+            )
+        )
+
+    base = base.order_by(Conversation.id).limit(limit)
+    conversations = base.all()
+
+    # 对命中 turn 的会话，附上前 3 条匹配 turn 的简短摘要，方便前端高亮预览
+    matched_turns_by_conv: dict[int, list[dict]] = {}
+    if q_strip and conversations:
+        like = f"%{q_strip}%"
+        conv_ids = [c.id for c in conversations]
+        turn_hits = (
+            db.query(Turn)
+            .filter(
+                Turn.conversation_id.in_(conv_ids),
+                Turn.user_query.ilike(like),
+            )
+            .order_by(Turn.conversation_id, Turn.turn_index)
+            .all()
+        )
+        for t in turn_hits:
+            bucket = matched_turns_by_conv.setdefault(t.conversation_id, [])
+            if len(bucket) < 3:
+                bucket.append({"turn_index": t.turn_index, "user_query": t.user_query})
+
+    items = [
+        {
+            "id": c.id,
+            "conversation_id_src": c.conversation_id_src,
+            "dimension_tag": c.dimension_tag,
+            "quality_label": c.quality_label,
+            "issue_type": c.issue_type,
+            "total_turns": c.total_turns,
+            "matched_turns": matched_turns_by_conv.get(c.id, []),
+        }
+        for c in conversations
+    ]
+
+    return {
+        "dataset_id": dataset_id,
+        "q": q_strip,
+        "total": len(items),
+        "truncated": len(items) >= limit,
+        "items": items,
+    }
 
 
 @router.post("/upload", response_model=DatasetOut)
@@ -128,6 +260,7 @@ def _mapping_from_payload(payload: FieldMappingPayload) -> dataset_parser.FieldM
         dimension_tag=payload.dimension_tag or None,
         quality_label=payload.quality_label or None,
         issue_type=payload.issue_type or None,
+        turn_index_source=payload.turn_index_source or "turn_index",
     )
 
 

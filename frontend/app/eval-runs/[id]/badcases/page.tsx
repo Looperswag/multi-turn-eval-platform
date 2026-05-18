@@ -7,6 +7,7 @@ import {
   type BadcaseListResponse,
   type BadcaseTag,
   type CaseFullDetail,
+  type RegressionSetOut,
 } from "@/lib/api";
 
 const DIM_CODES = ["dim1", "dim2", "dim3", "dim4", "dim5", "dim6"] as const;
@@ -627,6 +628,7 @@ function CaseDrawer({
             <TagPanel
               key={detail.case_id}
               caseId={detail.case_id}
+              conversationId={detail.conversation_id}
               tags={detail.tags}
               onChanged={() => {
                 fetchDetail();
@@ -750,10 +752,12 @@ function RawDimBlock({
 
 function TagPanel({
   caseId,
+  conversationId,
   tags,
   onChanged,
 }: {
   caseId: number;
+  conversationId: number;
   tags: BadcaseTag[];
   onChanged: () => void;
 }) {
@@ -761,6 +765,49 @@ function TagPanel({
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // C.2：回归集下拉
+  const [regressionSets, setRegressionSets] = useState<RegressionSetOut[]>([]);
+  const [selectedRsId, setSelectedRsId] = useState<number>(0);
+  const [rsBusy, setRsBusy] = useState(false);
+  const [rsMsg, setRsMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    api<RegressionSetOut[]>("/api/regression-sets")
+      .then((rs) => {
+        setRegressionSets(rs);
+        if (rs.length > 0) setSelectedRsId(rs[0].id);
+      })
+      .catch(() => {
+        /* 忽略错误，不阻塞 tag 主流程 */
+      });
+  }, []);
+
+  async function addToRegression() {
+    if (!selectedRsId) return;
+    setRsBusy(true);
+    setRsMsg(null);
+    try {
+      const res = await api<{ added: number; skipped: number }>(
+        `/api/regression-sets/${selectedRsId}/items`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            conversation_ids: [conversationId],
+            source_case_id: caseId,
+          }),
+        },
+      );
+      if (res.added > 0) {
+        setRsMsg(`已加入回归集`);
+      } else if (res.skipped > 0) {
+        setRsMsg(`已在回归集中`);
+      }
+    } catch (e) {
+      setRsMsg(`失败：${(e as Error).message}`);
+    } finally {
+      setRsBusy(false);
+    }
+  }
 
   async function add() {
     const tag = newTag.trim();
@@ -895,18 +942,44 @@ function TagPanel({
         </div>
       </div>
 
-      {/* 回归集占位 */}
-      <div className="mt-4 border border-dashed border-[var(--rule-strong)] rounded p-3 text-xs text-ink-3">
-        <div className="flex items-center justify-between">
-          <span>关联到回归集</span>
-          <button
-            disabled
-            className="px-2 py-1 border border-[var(--rule)] rounded opacity-50 cursor-not-allowed"
-          >
-            待启用
-          </button>
-        </div>
-        <div className="mt-1.5">回归集管理在 C 周提供。</div>
+      {/* C.2 加入回归集 */}
+      <div className="mt-4 border border-[var(--rule)] rounded p-3 text-xs bg-card-2">
+        <div className="uppercase-label text-ink-3 mb-2">加入回归集</div>
+        {regressionSets.length === 0 ? (
+          <div className="text-ink-3">
+            还没有回归集。先到{" "}
+            <Link href="/regression-sets/new" className="text-moss hover:underline">
+              /regression-sets/new
+            </Link>{" "}
+            创建。
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center gap-2">
+              <select
+                value={selectedRsId}
+                onChange={(e) => setSelectedRsId(parseInt(e.target.value, 10))}
+                className="flex-1 px-2 py-1 border border-[var(--rule-strong)] rounded bg-card text-xs"
+              >
+                {regressionSets.map((rs) => (
+                  <option key={rs.id} value={rs.id}>
+                    {rs.name} ({rs.item_count})
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={addToRegression}
+                disabled={rsBusy || !selectedRsId}
+                className="px-2 py-1 bg-moss text-white rounded hover:opacity-90 disabled:opacity-40"
+              >
+                {rsBusy ? "…" : "加入"}
+              </button>
+            </div>
+            {rsMsg && (
+              <div className="mt-1.5 text-[11px] text-moss">{rsMsg}</div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
