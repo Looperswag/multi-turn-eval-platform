@@ -13,9 +13,14 @@ class EvalRunCreate(BaseModel):
     dimensions_selected: list[str] = Field(
         default_factory=lambda: ["dim1", "dim2", "dim3", "dim4", "dim5", "dim6"]
     )
+    # 每维度权重覆盖；None 时 fallback DEFAULT_DIMENSION_WEIGHTS
+    # 不强制 sum=1，scoring 按实际 total_weight 归一化（all-zero 会被 API 拒绝）
+    dimension_weights: dict[str, float] | None = None
     concurrency: int = 5
     sampling_count: int | None = None
     baseline_run_id: int | None = None
+    # C.2：可选指定回归集 —— 非空时 task 仅评测该集合内 conversation
+    regression_set_id: int | None = None
 
 
 class EvalRunOut(BaseModel):
@@ -29,12 +34,14 @@ class EvalRunOut(BaseModel):
     judge_model_id: int
     judge_prompt_version_ids: dict
     dimensions_selected: list
+    dimension_weights: dict | None = None
     total: int
     completed: int
     failed: int
     weighted_score: float | None
     pass_rate: float | None
     baseline_run_id: int | None
+    regression_set_id: int | None
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime

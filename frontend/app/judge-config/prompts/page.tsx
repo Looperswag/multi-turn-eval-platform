@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { api } from "@/lib/api";
+import PromptVersionRow from "@/components/prompts/prompt-version-row";
 
 type PromptVersion = {
   id: number;
@@ -11,6 +12,7 @@ type PromptVersion = {
   parent_version_id: number | null;
   created_at: string;
   updated_at: string;
+  in_use_count: number;
 };
 
 const DIM_NAMES: Record<string, string> = {
@@ -126,33 +128,14 @@ export default async function PromptsPage() {
                 </Link>
               </div>
 
-              {list.length > 1 && (
-                <details className="text-xs">
-                  <summary className="cursor-pointer text-ink-3 hover:text-ink">
-                    展开全部 {list.length} 个版本
+              {list.length > 0 && (
+                <details className="text-xs" open={list.length <= 4}>
+                  <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">
+                    所有版本（{list.length}）· hover 显示操作
                   </summary>
-                  <ul className="mt-2 space-y-1.5">
+                  <ul className="mt-2">
                     {list.map((p) => (
-                      <li
-                        key={p.id}
-                        className="flex items-center gap-2 py-1"
-                      >
-                        <Link
-                          href={`/judge-config/prompts/${p.id}`}
-                          className="font-mono-feat no-underline text-ink-2 hover:text-ink"
-                        >
-                          {p.version_tag}
-                        </Link>
-                        {p.is_active && (
-                          <span className="badge badge-pass">Active</span>
-                        )}
-                        {!p.is_active && p.parent_version_id && (
-                          <span className="badge badge-info">草稿</span>
-                        )}
-                        <span className="ml-auto text-ink-3 tabular-nums">
-                          {new Date(p.updated_at).toLocaleDateString()}
-                        </span>
-                      </li>
+                      <PromptVersionRow key={p.id} p={p} />
                     ))}
                   </ul>
                 </details>

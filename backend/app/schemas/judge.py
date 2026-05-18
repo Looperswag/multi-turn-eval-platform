@@ -13,6 +13,8 @@ class JudgePromptVersionOut(BaseModel):
     parent_version_id: int | None
     created_at: datetime
     updated_at: datetime
+    # 由 list_prompts/get_prompt 端点动态填充；0 表示尚未被任何 run 引用 → 可编辑/删除
+    in_use_count: int = 0
 
 
 class JudgePromptVersionDetail(JudgePromptVersionOut):

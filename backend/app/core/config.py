@@ -11,6 +11,8 @@ class Settings(BaseSettings):
 
     # --- API ---
     api_key: str = "dev-key-change-me"
+    # C.4: 全局鉴权开关。默认 False 兼容内网/dev 部署；生产/外网时设 True 启用 X-API-Key
+    require_api_key: bool = False
     cors_origins: list[str] = ["http://localhost:3000"]
 
     # --- Judge models ---
@@ -21,6 +23,12 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+
+    # DeepSeek (走 Anthropic 兼容协议: /anthropic 后缀)
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com/anthropic"
+    deepseek_default_model: str = "deepseek-v4-pro"
+    deepseek_max_tokens: int = 4096
 
     # --- Eval engine defaults ---
     default_judge_temperature: float = 0.1

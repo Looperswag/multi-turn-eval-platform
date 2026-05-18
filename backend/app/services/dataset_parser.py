@@ -17,7 +17,8 @@ import csv
 import io
 import json
 from dataclasses import dataclass, field, asdict
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Literal
 
 from openpyxl import load_workbook
 
@@ -34,17 +35,24 @@ class ParsedFile:
     format: str  # excel / csv / json
 
 
+TurnIndexSource = Literal["turn_index", "timestamp"]
+
+
 @dataclass
 class FieldMapping:
     conversation_id: str | None = None
-    turn_index: str | None = None
+    turn_index: str | None = None  # 在 timestamp 模式下，这里也存"时间戳列名"
     user_query: str | None = None
     rewritten_query: str | None = None
     dimension_tag: str | None = None
     quality_label: str | None = None
     issue_type: str | None = None
+    # 轮次序号的派生方式：
+    #   "turn_index" — 直接读取数字列（默认）
+    #   "timestamp" — 把 turn_index 字段视作时间戳列，按 conv 内升序派生 1..N
+    turn_index_source: TurnIndexSource = "turn_index"
 
-    def as_dict(self) -> dict[str, str | None]:
+    def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -187,6 +195,12 @@ _FIELD_ALIASES: dict[str, list[str]] = {
         "round", "round_index", "step", "step_index",
         "轮次", "轮序", "轮数", "turn轮次", "顺序",
     ],
+    # 仅用于启发式：识别后将作为 turn_index 列 + turn_index_source="timestamp"
+    "_timestamp": [
+        "gmt_create", "gmtcreate", "created_at", "createdat", "create_time",
+        "createtime", "timestamp", "time", "datetime", "event_time", "ts",
+        "创建时间", "时间", "时间戳",
+    ],
     "user_query": [
         "user_query", "userquery", "query", "user_input", "userinput",
         "input", "utterance", "user", "user_text", "raw_query", "原始query",
@@ -217,14 +231,18 @@ def _normalize(col: str) -> str:
 
 
 def infer_field_mapping(columns: list[str]) -> FieldMapping:
-    """按列名启发式推断映射。每个目标字段只匹配第一个命中的列。"""
+    """按列名启发式推断映射。每个目标字段只匹配第一个命中的列。
+
+    `_timestamp` 不是真实字段，仅作为 turn_index 列的备选：当没识别到数字 turn_index 列
+    但识别到时间戳列时，自动把 mapping.turn_index 指向时间戳列并切到 timestamp 模式。
+    """
     normalized = [(c, _normalize(c)) for c in columns]
     mapping = FieldMapping()
     used_cols: set[str] = set()
+    inferred: dict[str, str] = {}  # target -> chosen col
 
     for target, aliases in _FIELD_ALIASES.items():
         norm_aliases = [_normalize(a) for a in aliases]
-        # 优先精确匹配（normalized 完全相等）
         chosen: str | None = None
         for col, n in normalized:
             if col in used_cols:
@@ -232,7 +250,6 @@ def infer_field_mapping(columns: list[str]) -> FieldMapping:
             if n in norm_aliases:
                 chosen = col
                 break
-        # 次优：子串匹配（normalized 包含 alias 或 alias 包含 normalized）
         if chosen is None:
             for col, n in normalized:
                 if col in used_cols:
@@ -246,8 +263,19 @@ def infer_field_mapping(columns: list[str]) -> FieldMapping:
                 if chosen:
                     break
         if chosen:
-            setattr(mapping, target, chosen)
+            inferred[target] = chosen
             used_cols.add(chosen)
+
+    # 应用真实字段
+    for target, col in inferred.items():
+        if target.startswith("_"):
+            continue
+        setattr(mapping, target, col)
+
+    # 若没识别到 turn_index 但识别到 timestamp 列，按时间戳派生
+    if not mapping.turn_index and inferred.get("_timestamp"):
+        mapping.turn_index = inferred["_timestamp"]
+        mapping.turn_index_source = "timestamp"
 
     return mapping
 
@@ -271,6 +299,74 @@ def _to_int(v: Any) -> int | None:
             return int(float(v))
         except (TypeError, ValueError):
             return None
+
+
+# 常见时间戳格式（按宽容程度从严到松；首个能解析的胜出）
+_DATETIME_FORMATS: tuple[str, ...] = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d %H:%M",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%SZ",
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+)
+
+
+def _parse_datetime(v: Any) -> datetime | None:
+    """尽力把任意值解析为 datetime。
+
+    支持：
+    - datetime / date 对象（直接转换）
+    - int/float 当作 epoch 秒；> 1e12 时按毫秒处理
+    - str：先尝试 fromisoformat，再走若干常见格式
+    """
+    if v is None or v == "":
+        return None
+    if isinstance(v, datetime):
+        return v
+    # date 但不是 datetime
+    try:
+        from datetime import date
+        if isinstance(v, date):
+            return datetime(v.year, v.month, v.day)
+    except Exception:
+        pass
+
+    if isinstance(v, (int, float)):
+        try:
+            ts = float(v)
+            if ts > 1e12:  # 毫秒级
+                ts = ts / 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    s = str(v).strip()
+    if not s:
+        return None
+    # 纯数字字符串当 epoch
+    if s.isdigit():
+        try:
+            ts = float(s)
+            if ts > 1e12:
+                ts = ts / 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
+        except (OverflowError, OSError, ValueError):
+            pass
+    # ISO 8601（Python 3.11+ fromisoformat 容忍 'Z' 后缀，但更早版本不行 → 简单兜底）
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    for fmt in _DATETIME_FORMATS:
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def _to_str(v: Any) -> str:
@@ -302,40 +398,59 @@ def validate(rows: list[dict[str, Any]], mapping: FieldMapping) -> ValidationRep
     cid_col = mapping.conversation_id
     tidx_col = mapping.turn_index
     uq_col = mapping.user_query
+    by_timestamp = mapping.turn_index_source == "timestamp"
 
     empty_conv: list[str] = []
     empty_query: list[str] = []
     invalid_turn_idx: list[str] = []
+    invalid_timestamps: list[str] = []
 
     # 按 conversation_id 聚合
-    conv_turns: dict[str, list[int]] = {}
-    conv_seen_pairs: dict[tuple[str, int], int] = {}
+    conv_turns: dict[str, list[int]] = {}          # 仅 turn_index 模式用
+    conv_timestamps: dict[str, list[datetime]] = {} # 仅 timestamp 模式用
+    conv_seen_pairs: dict[tuple[str, Any], int] = {}
     dup_pairs: list[str] = []
 
     for i, row in enumerate(rows):
         conv_id = _to_str(row.get(cid_col))
-        tidx = _to_int(row.get(tidx_col))
         uq = _to_str(row.get(uq_col))
 
         if not conv_id:
             if len(empty_conv) < _MAX_SAMPLE:
                 empty_conv.append(f"row#{i + 2}")
             continue
-        if tidx is None:
-            if len(invalid_turn_idx) < _MAX_SAMPLE:
-                invalid_turn_idx.append(f"row#{i + 2} value={row.get(tidx_col)!r}")
-            continue
-        if not uq:
-            if len(empty_query) < _MAX_SAMPLE:
-                empty_query.append(f"{conv_id}/turn#{tidx}")
 
-        key = (conv_id, tidx)
-        if key in conv_seen_pairs:
-            if len(dup_pairs) < _MAX_SAMPLE:
-                dup_pairs.append(f"{conv_id}/turn#{tidx}")
-            continue
-        conv_seen_pairs[key] = i
-        conv_turns.setdefault(conv_id, []).append(tidx)
+        if by_timestamp:
+            ts = _parse_datetime(row.get(tidx_col))
+            if ts is None:
+                if len(invalid_timestamps) < _MAX_SAMPLE:
+                    invalid_timestamps.append(f"row#{i + 2} value={row.get(tidx_col)!r}")
+                continue
+            key: tuple[str, Any] = (conv_id, ts)
+            if key in conv_seen_pairs:
+                if len(dup_pairs) < _MAX_SAMPLE:
+                    dup_pairs.append(f"{conv_id}@{ts.isoformat()}")
+                continue
+            conv_seen_pairs[key] = i
+            conv_timestamps.setdefault(conv_id, []).append(ts)
+            if not uq and len(empty_query) < _MAX_SAMPLE:
+                empty_query.append(f"{conv_id}@{ts.isoformat()}")
+        else:
+            tidx = _to_int(row.get(tidx_col))
+            if tidx is None:
+                if len(invalid_turn_idx) < _MAX_SAMPLE:
+                    invalid_turn_idx.append(f"row#{i + 2} value={row.get(tidx_col)!r}")
+                continue
+            if not uq:
+                if len(empty_query) < _MAX_SAMPLE:
+                    empty_query.append(f"{conv_id}/turn#{tidx}")
+            key = (conv_id, tidx)
+            if key in conv_seen_pairs:
+                if len(dup_pairs) < _MAX_SAMPLE:
+                    dup_pairs.append(f"{conv_id}/turn#{tidx}")
+                continue
+            conv_seen_pairs[key] = i
+            conv_turns.setdefault(conv_id, []).append(tidx)
 
     if empty_conv:
         issues.append(ValidationIssue(
@@ -347,6 +462,12 @@ def validate(rows: list[dict[str, Any]], mapping: FieldMapping) -> ValidationRep
             severity="error", code="invalid_turn_index",
             message="turn_index 无法解析为整数", count=len(invalid_turn_idx), sample=invalid_turn_idx,
         ))
+    if invalid_timestamps:
+        issues.append(ValidationIssue(
+            severity="error", code="invalid_timestamp",
+            message="时间戳无法解析（支持 YYYY-MM-DD HH:MM:SS、ISO 8601、epoch 等）",
+            count=len(invalid_timestamps), sample=invalid_timestamps,
+        ))
     if empty_query:
         issues.append(ValidationIssue(
             severity="error", code="empty_user_query",
@@ -354,29 +475,38 @@ def validate(rows: list[dict[str, Any]], mapping: FieldMapping) -> ValidationRep
         ))
     if dup_pairs:
         issues.append(ValidationIssue(
-            severity="warning", code="duplicate_pair",
-            message="重复 (conversation_id, turn_index) 已被忽略", count=len(dup_pairs), sample=dup_pairs,
+            severity="warning",
+            code="duplicate_pair",
+            message=(
+                "同一 conversation 内出现重复时间戳，将按出现顺序保留首条"
+                if by_timestamp
+                else "重复 (conversation_id, turn_index) 已被忽略"
+            ),
+            count=len(dup_pairs), sample=dup_pairs,
         ))
 
-    # 连续性 / 长度
-    turn_gaps: list[str] = []
     long_convs: list[str] = []
-    for cid, idxs in conv_turns.items():
-        idxs_sorted = sorted(idxs)
-        # 期望 1..N
-        if idxs_sorted[0] != 1 or any(b - a != 1 for a, b in zip(idxs_sorted, idxs_sorted[1:])):
-            if len(turn_gaps) < _MAX_SAMPLE:
-                turn_gaps.append(f"{cid} turns={idxs_sorted}")
-        if len(idxs_sorted) > 20:
-            if len(long_convs) < _MAX_SAMPLE:
+    if by_timestamp:
+        # timestamp 模式：派生后必然 1..N 连续，不需要 gap 校验；
+        # 但若同一会话只有 1 轮，未必是问题，跳过。
+        for cid, tss in conv_timestamps.items():
+            if len(tss) > 20 and len(long_convs) < _MAX_SAMPLE:
+                long_convs.append(f"{cid} ({len(tss)} turns)")
+    else:
+        turn_gaps: list[str] = []
+        for cid, idxs in conv_turns.items():
+            idxs_sorted = sorted(idxs)
+            if idxs_sorted[0] != 1 or any(b - a != 1 for a, b in zip(idxs_sorted, idxs_sorted[1:])):
+                if len(turn_gaps) < _MAX_SAMPLE:
+                    turn_gaps.append(f"{cid} turns={idxs_sorted}")
+            if len(idxs_sorted) > 20 and len(long_convs) < _MAX_SAMPLE:
                 long_convs.append(f"{cid} ({len(idxs_sorted)} turns)")
-
-    if turn_gaps:
-        issues.append(ValidationIssue(
-            severity="warning", code="turn_index_gap",
-            message="同一 conversation 的 turn_index 不连续或未从 1 开始",
-            count=len(turn_gaps), sample=turn_gaps,
-        ))
+        if turn_gaps:
+            issues.append(ValidationIssue(
+                severity="warning", code="turn_index_gap",
+                message="同一 conversation 的 turn_index 不连续或未从 1 开始",
+                count=len(turn_gaps), sample=turn_gaps,
+            ))
     if long_convs:
         issues.append(ValidationIssue(
             severity="warning", code="overlong_conversation",
@@ -400,9 +530,10 @@ def validate(rows: list[dict[str, Any]], mapping: FieldMapping) -> ValidationRep
             ))
 
     is_passable = not any(i.severity == "error" for i in issues)
+    total_convs = len(conv_timestamps) if by_timestamp else len(conv_turns)
     return ValidationReport(
         issues=issues,
-        total_conversations=len(conv_turns),
+        total_conversations=total_convs,
         total_turns=len(conv_seen_pairs),
         is_passable=is_passable,
     )
@@ -414,7 +545,13 @@ def validate(rows: list[dict[str, Any]], mapping: FieldMapping) -> ValidationRep
 
 
 def transform(rows: list[dict[str, Any]], mapping: FieldMapping) -> list[dict[str, Any]]:
-    """按 (conversation_id) 分组拼装为现有 datasets.upload 接受的嵌套格式。"""
+    """按 (conversation_id) 分组拼装为现有 datasets.upload 接受的嵌套格式。
+
+    turn_index_source:
+      - "turn_index": 直接读列值为整数；duplicate (cid, tidx) 后写入者被丢弃。
+      - "timestamp" : 列值解析为 datetime；每会话按时间升序派生 turn_index 1..N；
+                      原始时间戳字符串写入 Turn.timestamp。
+    """
     if not all(getattr(mapping, f) for f in _REQUIRED_FIELDS):
         raise ValueError("mapping missing required fields")
 
@@ -425,16 +562,31 @@ def transform(rows: list[dict[str, Any]], mapping: FieldMapping) -> list[dict[st
     dim_col = mapping.dimension_tag
     ql_col = mapping.quality_label
     iss_col = mapping.issue_type
+    by_timestamp = mapping.turn_index_source == "timestamp"
 
     grouped: dict[str, dict[str, Any]] = {}
     for row in rows:
         cid = _to_str(row.get(cid_col))
-        tidx = _to_int(row.get(tidx_col))
-        if not cid or tidx is None:
+        if not cid:
             continue
         uq = _to_str(row.get(uq_col))
         if not uq:
             continue
+
+        if by_timestamp:
+            ts_obj = _parse_datetime(row.get(tidx_col))
+            if ts_obj is None:
+                continue
+            sort_key: Any = ts_obj
+            # 保留原始时间戳的字符串形态（去掉 ws）作为 Turn.timestamp
+            ts_display = _to_str(row.get(tidx_col)) or ts_obj.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            tidx_val = _to_int(row.get(tidx_col))
+            if tidx_val is None:
+                continue
+            sort_key = tidx_val
+            ts_display = _to_str(row.get("timestamp")) or None
+
         conv = grouped.get(cid)
         if conv is None:
             conv = {
@@ -442,36 +594,41 @@ def transform(rows: list[dict[str, Any]], mapping: FieldMapping) -> list[dict[st
                 "dimension_tag": _to_str(row.get(dim_col)) if dim_col else None,
                 "quality_label": _to_str(row.get(ql_col)) if ql_col else None,
                 "issue_type": _to_str(row.get(iss_col)) if iss_col else None,
-                "turns": [],
-                "_turn_keys": set(),
+                "_pending_turns": [],
+                "_seen_keys": set(),
             }
-            # 空字符串当 None
             for k in ("dimension_tag", "quality_label", "issue_type"):
                 if conv[k] == "":
                     conv[k] = None
             grouped[cid] = conv
 
-        if tidx in conv["_turn_keys"]:
+        if sort_key in conv["_seen_keys"]:
             continue
-        conv["_turn_keys"].add(tidx)
+        conv["_seen_keys"].add(sort_key)
 
-        turn = {
-            "turn_index": tidx,
+        pending = {
+            "_sort_key": sort_key,
             "user_query": uq,
         }
         if rw_col:
             rw = _to_str(row.get(rw_col))
-            turn["rewritten_query"] = rw or None
-        ts = row.get("timestamp")
-        if ts:
-            turn["timestamp"] = _to_str(ts)
-        conv["turns"].append(turn)
+            pending["rewritten_query"] = rw or None
+        if ts_display:
+            pending["timestamp"] = ts_display
+        conv["_pending_turns"].append(pending)
 
     out: list[dict[str, Any]] = []
     for conv in grouped.values():
-        conv["turns"].sort(key=lambda t: t["turn_index"])
-        conv["total_turns"] = len(conv["turns"])
-        conv.pop("_turn_keys", None)
+        pending = sorted(conv.pop("_pending_turns"), key=lambda t: t["_sort_key"])
+        turns: list[dict[str, Any]] = []
+        for i, p in enumerate(pending):
+            t = {k: v for k, v in p.items() if k != "_sort_key"}
+            # timestamp 模式下派生 1..N；turn_index 模式下保留原值
+            t["turn_index"] = (i + 1) if by_timestamp else p["_sort_key"]
+            turns.append(t)
+        conv["turns"] = turns
+        conv["total_turns"] = len(turns)
+        conv.pop("_seen_keys", None)
         out.append(conv)
     return out
 

@@ -8,6 +8,8 @@ import { api } from "@/lib/api";
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
+type TurnIndexSource = "turn_index" | "timestamp";
+
 type Mapping = {
   conversation_id: string | null;
   turn_index: string | null;
@@ -16,6 +18,7 @@ type Mapping = {
   dimension_tag: string | null;
   quality_label: string | null;
   issue_type: string | null;
+  turn_index_source: TurnIndexSource;
 };
 
 type ParseResult = {
@@ -63,9 +66,11 @@ type PreviewResult = {
 
 type BotVersion = { id: number; name: string; version_tag: string };
 
-const TARGET_FIELDS: { key: keyof Mapping; label: string; required: boolean; hint?: string }[] = [
+type MappingFieldKey = Exclude<keyof Mapping, "turn_index_source">;
+
+const TARGET_FIELDS: { key: MappingFieldKey; label: string; required: boolean; hint?: string }[] = [
   { key: "conversation_id", label: "Conversation ID", required: true, hint: "会话唯一标识" },
-  { key: "turn_index", label: "Turn Index", required: true, hint: "轮次序号（1 起）" },
+  { key: "turn_index", label: "轮次序号", required: true, hint: "数字序号 或 用于排序的时间戳" },
   { key: "user_query", label: "User Query", required: true, hint: "用户输入文本" },
   { key: "rewritten_query", label: "Rewritten Query", required: false, hint: "Bot 改写（可选）" },
   { key: "dimension_tag", label: "Dimension Tag", required: false, hint: "维度标签（可选）" },
@@ -99,6 +104,7 @@ export default function DatasetUploadWizardPage() {
     dimension_tag: null,
     quality_label: null,
     issue_type: null,
+    turn_index_source: "turn_index",
   });
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewResult, setPreviewResult] = useState<PreviewResult | null>(null);
@@ -482,28 +488,36 @@ function Step2({
           <div className="uppercase-label text-ink-3 mb-2">目标字段</div>
           <div className="bg-card border border-[var(--rule)] rounded divide-y divide-[var(--rule)]">
             {TARGET_FIELDS.map((t) => (
-              <div key={t.key} className="px-4 py-3 flex items-center gap-3">
-                <div className="flex-1">
-                  <div className="text-sm text-ink">
-                    {t.label}
-                    {t.required && <span className="text-tomato ml-1">*</span>}
+              <div key={t.key} className="px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <div className="text-sm text-ink">
+                      {t.label}
+                      {t.required && <span className="text-tomato ml-1">*</span>}
+                    </div>
+                    {t.hint && <div className="text-ink-3 text-xs">{t.hint}</div>}
                   </div>
-                  {t.hint && <div className="text-ink-3 text-xs">{t.hint}</div>}
+                  <select
+                    value={mapping[t.key] ?? ""}
+                    onChange={(e) =>
+                      setMapping({ ...mapping, [t.key]: e.target.value || null })
+                    }
+                    className="border border-[var(--rule-strong)] rounded bg-card-2 px-2 py-1 text-xs min-w-[160px]"
+                  >
+                    <option value="">— 不映射 —</option>
+                    {parseResult.columns.map((col) => (
+                      <option key={col} value={col}>
+                        {col}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-                <select
-                  value={mapping[t.key] ?? ""}
-                  onChange={(e) =>
-                    setMapping({ ...mapping, [t.key]: e.target.value || null })
-                  }
-                  className="border border-[var(--rule-strong)] rounded bg-card-2 px-2 py-1 text-xs min-w-[160px]"
-                >
-                  <option value="">— 不映射 —</option>
-                  {parseResult.columns.map((col) => (
-                    <option key={col} value={col}>
-                      {col}
-                    </option>
-                  ))}
-                </select>
+                {t.key === "turn_index" && (
+                  <TurnIndexSourceToggle
+                    value={mapping.turn_index_source}
+                    onChange={(src) => setMapping({ ...mapping, turn_index_source: src })}
+                  />
+                )}
               </div>
             ))}
           </div>
@@ -821,6 +835,47 @@ function Step4({
           {confirming ? "入库中…" : "确认入库"}
         </button>
       </div>
+    </div>
+  );
+}
+
+function TurnIndexSourceToggle({
+  value,
+  onChange,
+}: {
+  value: TurnIndexSource;
+  onChange: (v: TurnIndexSource) => void;
+}) {
+  const OPTS: { v: TurnIndexSource; label: string; hint: string }[] = [
+    { v: "turn_index", label: "数字序号", hint: "列值已经是 1/2/3…" },
+    { v: "timestamp", label: "按时间戳排序", hint: "如 gmt_create，会自动派生 1..N" },
+  ];
+  return (
+    <div className="mt-2 flex items-center gap-2 flex-wrap">
+      <span className="text-ink-3 text-[11px] uppercase-label">来源</span>
+      <div className="inline-flex border border-[var(--rule-strong)] rounded overflow-hidden">
+        {OPTS.map((o) => {
+          const active = o.v === value;
+          return (
+            <button
+              key={o.v}
+              type="button"
+              onClick={() => onChange(o.v)}
+              className={`px-2.5 py-1 text-xs transition-colors ${
+                active
+                  ? "bg-moss text-white"
+                  : "bg-card-2 text-ink-2 hover:bg-[var(--moss-bg)]"
+              }`}
+              title={o.hint}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+      <span className="text-ink-3 text-[11px]">
+        {value === "timestamp" ? "→ 按时间升序自动派生轮次" : "→ 直接读取列值"}
+      </span>
     </div>
   );
 }

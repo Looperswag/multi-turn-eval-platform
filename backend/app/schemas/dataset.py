@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 
@@ -49,12 +50,13 @@ class DatasetCreate(BaseModel):
 
 class FieldMappingPayload(BaseModel):
     conversation_id: str | None = None
-    turn_index: str | None = None
+    turn_index: str | None = None  # turn_index_source=="timestamp" 时此处为时间戳列名
     user_query: str | None = None
     rewritten_query: str | None = None
     dimension_tag: str | None = None
     quality_label: str | None = None
     issue_type: str | None = None
+    turn_index_source: Literal["turn_index", "timestamp"] = "turn_index"
 
 
 class ValidationIssueOut(BaseModel):

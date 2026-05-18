@@ -24,6 +24,7 @@ export default async function DatasetsPage() {
         <p className="text-ink-2 max-w-2xl">
           原始多轮 query 集合。与 bot 改写解耦：同一个 dataset 可对接多个 bot 版本，从而支持「bot 模型横向对比」。
         </p>
+        <p className="text-ink-3 text-xs mt-2">点击任意一行可预览数据结构与会话内容。</p>
       </div>
 
       <div className="mb-6 flex justify-end">
@@ -53,18 +54,29 @@ export default async function DatasetsPage() {
             </thead>
             <tbody>
               {datasets.map((d) => (
-                <tr key={d.id} className="border-b border-[var(--rule)] last:border-0">
-                  <td className="px-5 py-3 font-mono-feat text-ink-3">#{d.id}</td>
-                  <td className="px-5 py-3">
-                    <div className="text-ink">{d.name}</div>
-                    {d.description && <div className="text-ink-3 text-xs">{d.description}</div>}
+                <tr
+                  key={d.id}
+                  className="border-b border-[var(--rule)] last:border-0 hover:bg-[var(--moss-bg)]/40 transition-colors group"
+                >
+                  <td className="px-5 py-3 font-mono-feat text-ink-3">
+                    <Link href={`/datasets/${d.id}`} className="block">#{d.id}</Link>
                   </td>
                   <td className="px-5 py-3">
-                    <span className="badge badge-neutral">{d.version}</span>
+                    <Link href={`/datasets/${d.id}`} className="block">
+                      <div className="text-ink group-hover:text-moss group-hover:underline underline-offset-4 decoration-1">{d.name}</div>
+                      {d.description && <div className="text-ink-3 text-xs mt-0.5">{d.description}</div>}
+                    </Link>
                   </td>
-                  <td className="px-5 py-3 text-right font-mono-feat tabular-nums">{d.conversation_count}</td>
+                  <td className="px-5 py-3">
+                    <Link href={`/datasets/${d.id}`} className="block">
+                      <span className="badge badge-neutral">{d.version}</span>
+                    </Link>
+                  </td>
+                  <td className="px-5 py-3 text-right font-mono-feat tabular-nums">
+                    <Link href={`/datasets/${d.id}`} className="block">{d.conversation_count}</Link>
+                  </td>
                   <td className="px-5 py-3 text-right text-ink-3 text-xs">
-                    {new Date(d.created_at).toLocaleString()}
+                    <Link href={`/datasets/${d.id}`} className="block">{new Date(d.created_at).toLocaleString()}</Link>
                   </td>
                 </tr>
               ))}

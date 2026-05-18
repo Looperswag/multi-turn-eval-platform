@@ -120,16 +120,88 @@ class ArkJudgeClient(BaseJudgeClient):
         return completion.choices[0].message.content
 
 
-SUPPORTED_PROVIDERS = {"ark"}  # W3 阶段会加 anthropic / openai 子类
+class DeepSeekJudgeClient(BaseJudgeClient):
+    """DeepSeek judge client。走官方 Anthropic 兼容端点 (base_url=.../anthropic)。
+
+    DeepSeek 的 /anthropic 端点接受标准 Anthropic messages API，
+    因此直接复用 anthropic SDK 即可，只需替换 base_url。
+    """
+
+    provider = "deepseek"
+
+    def __init__(
+        self,
+        model_id: str | None = None,
+        temperature: float = 0.1,
+        max_retries: int = 3,
+        timeout: int | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
+        super().__init__(
+            model_id=model_id or settings.deepseek_default_model,
+            temperature=temperature,
+            max_retries=max_retries,
+            timeout=timeout or settings.ark_timeout,
+        )
+        from anthropic import Anthropic  # 延迟导入
+
+        resolved_key = api_key or settings.deepseek_api_key
+        if not resolved_key:
+            raise RuntimeError(
+                "DEEPSEEK_API_KEY 未配置；请在 backend/.env 中设置后重启 api/worker"
+            )
+        self._client = Anthropic(
+            api_key=resolved_key,
+            base_url=base_url or settings.deepseek_base_url,
+            timeout=float(self.timeout),
+        )
+        self._max_tokens = max_tokens or settings.deepseek_max_tokens
+
+    def _create_completion(self, messages: list[dict[str, str]]) -> str:
+        # Anthropic 协议要求 system 与 messages 分离；把 OpenAI 风格的
+        # role=system 抽出来作为顶层 system 参数。
+        system_parts: list[str] = []
+        chat_messages: list[dict[str, str]] = []
+        for m in messages:
+            if m.get("role") == "system":
+                content = m.get("content")
+                if content:
+                    system_parts.append(content)
+            else:
+                chat_messages.append({"role": m["role"], "content": m["content"]})
+
+        kwargs: dict[str, Any] = {
+            "model": self.model_id,
+            "max_tokens": self._max_tokens,
+            "temperature": self.temperature,
+            "messages": chat_messages or [{"role": "user", "content": ""}],
+        }
+        if system_parts:
+            kwargs["system"] = "\n\n".join(system_parts)
+
+        resp = self._client.messages.create(**kwargs)
+        # 取首个 text block 的内容
+        for block in resp.content or []:
+            text = getattr(block, "text", None)
+            if text:
+                return text
+        return ""
+
+
+SUPPORTED_PROVIDERS = {"ark", "deepseek"}  # anthropic/openai 暂未启用
 
 
 def build_judge_client(provider: str, **kwargs: Any) -> BaseJudgeClient:
     """根据 provider 字符串构建对应的 judge client。"""
     if provider == "ark":
         return ArkJudgeClient(**kwargs)
+    if provider == "deepseek":
+        return DeepSeekJudgeClient(**kwargs)
     if provider in {"anthropic", "openai"}:
         raise NotImplementedError(
-            f"provider {provider!r} 尚未实现，请暂时使用 ark/doubao；"
+            f"provider {provider!r} 尚未实现，请暂时使用 ark/deepseek；"
             f"AnthropicJudgeClient/OpenAIJudgeClient 计划在 W3 提供"
         )
     raise ValueError(f"unsupported judge provider: {provider!r}")

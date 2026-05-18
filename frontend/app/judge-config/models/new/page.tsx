@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 
 const PROVIDER_OPTIONS = [
   { value: "ark", label: "ark（火山方舟）" },
+  { value: "deepseek", label: "deepseek（Anthropic 兼容端点）" },
   { value: "anthropic", label: "anthropic" },
   { value: "openai", label: "openai" },
 ];

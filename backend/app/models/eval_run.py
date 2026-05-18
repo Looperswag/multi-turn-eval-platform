@@ -21,6 +21,8 @@ class EvalRun(Base):
     # {dim1: prompt_version_id, dim2: ..., ...}
     judge_prompt_version_ids: Mapped[dict] = mapped_column(JSON)
     dimensions_selected: Mapped[list] = mapped_column(JSON)  # ["dim1","dim2",...]
+    # 每次 run 可独立调权重；NULL 时 fallback 到 DEFAULT_DIMENSION_WEIGHTS
+    dimension_weights: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     concurrency: Mapped[int] = mapped_column(Integer, default=5)
     sampling_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -34,6 +36,10 @@ class EvalRun(Base):
 
     baseline_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("eval_run.id"), nullable=True
+    )
+    # C.2：可选关联回归集，非空时 task 仅评测集合内 conversation
+    regression_set_id: Mapped[int | None] = mapped_column(
+        ForeignKey("regression_set.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
