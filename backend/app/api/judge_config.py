@@ -2,7 +2,8 @@ import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
-from jinja2 import Environment, StrictUndefined, TemplateSyntaxError
+from jinja2 import Environment, StrictUndefined, TemplateSyntaxError, meta
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -165,6 +166,108 @@ def create_prompt(payload: JudgePromptVersionCreate, db: Session = Depends(get_d
         raise HTTPException(400, f"create failed: {exc}") from exc
     db.refresh(obj)
     return obj
+
+
+class PromptPreviewIn(BaseModel):
+    template: str
+    dim_code: str = "dim1"
+    strategy: str = "per_turn"
+
+
+class PromptPreviewOut(BaseModel):
+    rendered: str
+    vars_detected: list[str]
+    vars_used: list[str]
+    error: str | None = None
+
+
+# Sample contexts used by /prompts/preview — kept inline so the renderer-side
+# variable set stays the single source of truth for what a template can reference.
+_SAMPLE_TURN = {
+    "turn_index": 2,
+    "user_query": "再推荐个 8000 以内的设计笔记本",
+    "rewritten_query": "8000 以内设计用笔记本电脑",
+}
+_SAMPLE_TURNS_TEXT = (
+    "  第1轮 用户query: 想买个设计师用的笔记本，预算 5000\n"
+    "  第1轮 改写query: 5000 以内 设计师笔记本电脑\n\n"
+    "  第2轮 用户query: 再推荐个 8000 以内的设计笔记本\n"
+    "  第2轮 改写query: 8000 以内设计用笔记本电脑\n\n"
+    "  第3轮 用户query: 再来个鼠标\n"
+    "  第3轮 改写query: 鼠标\n\n"
+)
+_SAMPLE_TURNS_TEXT_WITH_META = _SAMPLE_TURNS_TEXT + (
+    "（meta: total_turns=3, has_brand_pin=false）\n"
+)
+_SAMPLE_HISTORY_TEXT = (
+    "  第1轮 用户query: 想买个设计师用的笔记本，预算 5000\n"
+    "  第1轮 改写query: 5000 以内 设计师笔记本电脑\n\n"
+)
+
+
+def _build_preview_context() -> dict:
+    """Sample values covering every jinja variable used across known templates.
+
+    StrictUndefined ensures we still surface unknown variable names as errors —
+    callers see exactly which placeholder is missing from the sample set.
+    """
+    return {
+        "history_text": _SAMPLE_HISTORY_TEXT,
+        "current_user_query": _SAMPLE_TURN["user_query"],
+        "current_rewritten_query": _SAMPLE_TURN["rewritten_query"],
+        "turns_text": _SAMPLE_TURNS_TEXT,
+        "turns_text_with_meta": _SAMPLE_TURNS_TEXT_WITH_META,
+        "meta_id": "demo_meta_001",
+        "total_turns": 3,
+        "turn_index": _SAMPLE_TURN["turn_index"],
+        "user_query": _SAMPLE_TURN["user_query"],
+        "rewritten_query": _SAMPLE_TURN["rewritten_query"],
+    }
+
+
+@router.post("/prompts/preview", response_model=PromptPreviewOut)
+def preview_prompt(payload: PromptPreviewIn):
+    env = Environment(undefined=StrictUndefined, autoescape=False, keep_trailing_newline=True)
+    ctx = _build_preview_context()
+    try:
+        ast = env.parse(payload.template)
+    except TemplateSyntaxError as exc:
+        return PromptPreviewOut(
+            rendered="",
+            vars_detected=[],
+            vars_used=[],
+            error=f"jinja2 语法错误 (line {exc.lineno}): {exc.message}",
+        )
+
+    detected = sorted(meta.find_undeclared_variables(ast))
+    available = set(ctx.keys())
+    used = [v for v in detected if v in available]
+    missing = [v for v in detected if v not in available]
+
+    # 缺失变量用 "«{var}»" 占位渲染，让用户看到模板形状但能识别未提供的占位
+    render_ctx = dict(ctx)
+    for v in missing:
+        render_ctx[v] = f"«{v}»"
+
+    try:
+        rendered = env.from_string(payload.template).render(**render_ctx)
+    except Exception as exc:  # noqa: BLE001
+        return PromptPreviewOut(
+            rendered="",
+            vars_detected=detected,
+            vars_used=used,
+            error=f"渲染失败: {exc}",
+        )
+
+    err = None
+    if missing:
+        err = f"模板引用了样例上下文未提供的变量: {', '.join(missing)}（已用 «{{var}}» 占位）"
+    return PromptPreviewOut(
+        rendered=rendered,
+        vars_detected=detected,
+        vars_used=used,
+        error=err,
+    )
 
 
 @router.put("/prompts/{prompt_id}", response_model=JudgePromptVersionDetail)

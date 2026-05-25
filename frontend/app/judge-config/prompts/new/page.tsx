@@ -1,5 +1,5 @@
 "use client";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
@@ -8,6 +8,13 @@ type PromptOut = {
   id: number;
   dimension_code: string;
   version_tag: string;
+};
+
+type PreviewResult = {
+  rendered: string;
+  vars_detected: string[];
+  vars_used: string[];
+  error: string | null;
 };
 
 const DIM_NAMES: Record<string, string> = {
@@ -55,6 +62,48 @@ function NewPromptInner() {
       .catch(() => setExisting([]));
   }, [dimensionCode]);
 
+  // ----- 实时预览：debounce 400ms 后调 /prompts/preview -----
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewSeq = useRef(0);
+
+  useEffect(() => {
+    if (!template.trim()) {
+      setPreview(null);
+      return;
+    }
+    const seq = ++previewSeq.current;
+    setPreviewLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api<PreviewResult>(
+          "/api/judge-config/prompts/preview",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              template,
+              dim_code: dimensionCode,
+              strategy,
+            }),
+          },
+        );
+        if (seq === previewSeq.current) setPreview(res);
+      } catch (err) {
+        if (seq === previewSeq.current) {
+          setPreview({
+            rendered: "",
+            vars_detected: [],
+            vars_used: [],
+            error: "预览请求失败：" + (err as Error).message,
+          });
+        }
+      } finally {
+        if (seq === previewSeq.current) setPreviewLoading(false);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [template, dimensionCode, strategy]);
+
   const suggestedTag = useMemo(() => {
     const nums = existing
       .map((p) => {
@@ -99,7 +148,7 @@ function NewPromptInner() {
   }
 
   return (
-    <div className="max-w-[1000px]">
+    <div className="max-w-[1400px]">
       <div className="mb-6">
         <div className="uppercase-label text-ink-3 mb-2">
           <Link
@@ -150,18 +199,25 @@ function NewPromptInner() {
           </Field>
         </div>
 
-        <Field label="Prompt 模板">
-          <textarea
-            required
-            value={template}
-            onChange={(e) => setTemplate(e.target.value)}
-            rows={18}
-            spellCheck={false}
-            className="w-full px-3 py-2 border border-[var(--rule-strong)] rounded bg-card-2 font-mono-feat text-xs leading-relaxed"
-            style={{ tabSize: 2 }}
-            placeholder="判官 prompt 模板正文…"
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:gap-6">
+          <Field label="Prompt 模板">
+            <textarea
+              required
+              value={template}
+              onChange={(e) => setTemplate(e.target.value)}
+              rows={22}
+              spellCheck={false}
+              className="w-full px-3 py-2 border border-[var(--rule-strong)] rounded bg-card-2 font-mono-feat text-xs leading-relaxed"
+              style={{ tabSize: 2 }}
+              placeholder="判官 prompt 模板正文…"
+            />
+          </Field>
+          <PreviewPane
+            template={template}
+            preview={preview}
+            loading={previewLoading}
           />
-        </Field>
+        </div>
 
         <div className="grid grid-cols-3 gap-4">
           <Field label="权重">
@@ -241,5 +297,62 @@ function Field({
       <span className="block uppercase-label text-ink-3 mb-1.5">{label}</span>
       {children}
     </label>
+  );
+}
+
+function PreviewPane({
+  template,
+  preview,
+  loading,
+}: {
+  template: string;
+  preview: PreviewResult | null;
+  loading: boolean;
+}) {
+  const hasTemplate = template.trim().length > 0;
+  return (
+    <div className="block">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="uppercase-label text-ink-3">渲染预览</span>
+        <span className="text-[10px] text-ink-3 font-mono-feat">
+          {loading
+            ? "渲染中…"
+            : preview && preview.vars_used.length > 0
+              ? `vars: ${preview.vars_used.join(", ")}`
+              : ""}
+        </span>
+      </div>
+      <div className="border border-[var(--rule-strong)] rounded bg-card-2 overflow-hidden">
+        {!hasTemplate && (
+          <div className="px-3 py-8 text-xs text-ink-3 italic-display">
+            在左侧输入模板即可实时预览（带样例 turns_text / meta_id / total_turns 等样本数据）
+          </div>
+        )}
+        {hasTemplate && preview?.error && (
+          <div className="border-b border-tomato/30 bg-tomato/5 px-3 py-2 text-xs text-tomato whitespace-pre-wrap">
+            {preview.error}
+          </div>
+        )}
+        {hasTemplate && preview?.rendered && (
+          <pre className="m-0 px-3 py-2 font-mono-feat text-xs leading-relaxed whitespace-pre-wrap text-ink max-h-[28rem] overflow-auto">
+            {preview.rendered}
+          </pre>
+        )}
+        {hasTemplate && !preview?.rendered && !preview?.error && !loading && (
+          <div className="px-3 py-8 text-xs text-ink-3 italic-display">无渲染输出</div>
+        )}
+      </div>
+      <div className="mt-2 text-[10px] text-ink-3 leading-relaxed">
+        样例上下文：3 轮多轮对话；可用变量：
+        <code className="font-mono-feat">history_text</code> ·{" "}
+        <code className="font-mono-feat">current_user_query</code> ·{" "}
+        <code className="font-mono-feat">current_rewritten_query</code> ·{" "}
+        <code className="font-mono-feat">turns_text</code> ·{" "}
+        <code className="font-mono-feat">turns_text_with_meta</code> ·{" "}
+        <code className="font-mono-feat">meta_id</code> ·{" "}
+        <code className="font-mono-feat">total_turns</code>。未提供变量以{" "}
+        <code className="font-mono-feat">«var»</code> 占位。
+      </div>
+    </div>
   );
 }

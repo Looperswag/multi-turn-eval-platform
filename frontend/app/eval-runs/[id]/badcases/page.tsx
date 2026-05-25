@@ -695,9 +695,9 @@ function RawDimBlock({
   data: unknown;
 }) {
   const [open, setOpen] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
   const [copied, setCopied] = useState(false);
   const json = useMemo(() => JSON.stringify(data, null, 2), [data]);
-  const lines = json.split("\n");
 
   async function copy() {
     try {
@@ -708,6 +708,8 @@ function RawDimBlock({
       // ignore
     }
   }
+
+  const structured = parseStructuredJudge(data);
 
   return (
     <div className="border border-[var(--rule)] rounded overflow-hidden">
@@ -728,30 +730,369 @@ function RawDimBlock({
       </button>
       {open && (
         <div className="border-t border-[var(--rule)] bg-[var(--bg)]">
-          <div className="flex items-center justify-end px-2 py-1 border-b border-[var(--rule)]">
+          <div className="flex items-center justify-end gap-3 px-2 py-1 border-b border-[var(--rule)] text-[10px]">
+            {structured.kind !== "unknown" && (
+              <button
+                onClick={() => setShowRaw(!showRaw)}
+                className="text-ink-3 hover:text-ink px-2 py-0.5"
+              >
+                {showRaw ? "结构化视图" : "查看 raw"}
+              </button>
+            )}
             <button
               onClick={copy}
-              className="text-[10px] text-ink-3 hover:text-ink px-2 py-0.5"
+              className="text-ink-3 hover:text-ink px-2 py-0.5"
             >
               {copied ? "已复制" : "复制"}
             </button>
           </div>
-          <pre className="text-[10px] font-mono-feat leading-snug max-h-72 overflow-auto">
-            <table className="w-full">
-              <tbody>
-                {lines.map((line, i) => (
-                  <tr key={i}>
-                    <td className="text-ink-4 text-right pr-2 pl-2 select-none tabular-nums w-10 border-r border-[var(--rule)]">
-                      {i + 1}
-                    </td>
-                    <td className="pl-2 whitespace-pre">{line}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </pre>
+          {showRaw || structured.kind === "unknown" ? (
+            <RawJsonTable json={json} />
+          ) : (
+            <StructuredJudgeCard parsed={structured} />
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+function RawJsonTable({ json }: { json: string }) {
+  const lines = json.split("\n");
+  return (
+    <pre className="text-[10px] font-mono-feat leading-snug max-h-72 overflow-auto m-0">
+      <table className="w-full">
+        <tbody>
+          {lines.map((line, i) => (
+            <tr key={i}>
+              <td className="text-ink-4 text-right pr-2 pl-2 select-none tabular-nums w-10 border-r border-[var(--rule)]">
+                {i + 1}
+              </td>
+              <td className="pl-2 whitespace-pre">{line}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </pre>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Structured reasoning card
+// ---------------------------------------------------------------------------
+
+type Dim1Eval = {
+  turn_index: number;
+  boundary_type?: string;
+  in_shopping_context?: boolean;
+  A_completeness?: number;
+  A_reasoning?: string;
+  B_no_hallucination?: number;
+  B_引入的幻觉词?: string[];
+  C_reasonable_completion?: number;
+  C_reasoning?: string;
+  overall_score?: number;
+  overall_explanation?: string;
+  confidence?: string;
+};
+
+type Dim1Parsed = {
+  kind: "dim1";
+  meta_id?: string;
+  total_score?: number;
+  total_turns?: number;
+  evaluations: Dim1Eval[];
+};
+
+type Dim2Constraint = {
+  id: string;
+  type?: string;
+  value?: string;
+  importance?: string;
+  weight?: number;
+  introduced_at?: number;
+  invalidated_at?: number | null;
+  invalidation_reason?: string | null;
+};
+
+type Dim2Retention = {
+  id: string;
+  should_appear_in_turns?: number[];
+  actually_appeared_in?: number[];
+  recall?: number;
+  missed_at_turns?: number[];
+};
+
+type Dim2Parsed = {
+  kind: "dim2";
+  meta_id?: string;
+  total_score?: number;
+  reasoning_step1?: string;
+  reasoning_step2?: string;
+  reasoning_step3?: string;
+  extracted_constraints: Dim2Constraint[];
+  constraint_retention: Dim2Retention[];
+  explanation?: string;
+};
+
+type ParsedJudge =
+  | Dim1Parsed
+  | Dim2Parsed
+  | { kind: "unknown"; raw: unknown };
+
+function parseStructuredJudge(data: unknown): ParsedJudge {
+  if (!data || typeof data !== "object") return { kind: "unknown", raw: data };
+  const top = data as Record<string, unknown>;
+  // evaluator wraps the LLM JSON under `detail`; unwrap one level if needed
+  const candidates: Record<string, unknown>[] = [top];
+  if (top.detail && typeof top.detail === "object") {
+    candidates.push(top.detail as Record<string, unknown>);
+  }
+
+  for (const obj of candidates) {
+    if (Array.isArray(obj.evaluations) && obj.evaluations.length > 0) {
+      const first = obj.evaluations[0] as Record<string, unknown>;
+      if ("A_completeness" in first || "overall_score" in first) {
+        return {
+          kind: "dim1",
+          meta_id: typeof obj.meta_id === "string" ? obj.meta_id : undefined,
+          total_score: typeof obj.total_score === "number" ? obj.total_score : undefined,
+          total_turns: typeof obj.total_turns === "number" ? obj.total_turns : undefined,
+          evaluations: obj.evaluations as Dim1Eval[],
+        };
+      }
+    }
+
+    if (
+      Array.isArray(obj.extracted_constraints) &&
+      Array.isArray(obj.constraint_retention)
+    ) {
+      return {
+        kind: "dim2",
+        meta_id: typeof obj.meta_id === "string" ? obj.meta_id : undefined,
+        total_score: typeof obj.total_score === "number" ? obj.total_score : undefined,
+        reasoning_step1: typeof obj.reasoning_step1 === "string" ? obj.reasoning_step1 : undefined,
+        reasoning_step2: typeof obj.reasoning_step2 === "string" ? obj.reasoning_step2 : undefined,
+        reasoning_step3: typeof obj.reasoning_step3 === "string" ? obj.reasoning_step3 : undefined,
+        extracted_constraints: obj.extracted_constraints as Dim2Constraint[],
+        constraint_retention: obj.constraint_retention as Dim2Retention[],
+        explanation: typeof obj.explanation === "string" ? obj.explanation : undefined,
+      };
+    }
+  }
+
+  return { kind: "unknown", raw: data };
+}
+
+function StructuredJudgeCard({ parsed }: { parsed: Dim1Parsed | Dim2Parsed }) {
+  if (parsed.kind === "dim1") return <Dim1StructuredCard parsed={parsed} />;
+  return <Dim2StructuredCard parsed={parsed} />;
+}
+
+function Dim1StructuredCard({ parsed }: { parsed: Dim1Parsed }) {
+  return (
+    <div className="px-3 py-3 space-y-3 max-h-[28rem] overflow-auto">
+      <div className="flex items-center gap-3 text-xs text-ink-2">
+        {parsed.meta_id && (
+          <span className="font-mono-feat text-ink-3">
+            meta {parsed.meta_id}
+          </span>
+        )}
+        {parsed.total_score != null && (
+          <span className="badge badge-info text-[10px]">
+            total {parsed.total_score.toFixed(2)}
+          </span>
+        )}
+        {parsed.total_turns != null && (
+          <span className="text-ink-3">{parsed.total_turns} 轮</span>
+        )}
+      </div>
+      <div className="space-y-2.5">
+        {parsed.evaluations.map((ev, i) => (
+          <Dim1EvalRow key={`${ev.turn_index}-${i}`} ev={ev} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Dim1EvalRow({ ev }: { ev: Dim1Eval }) {
+  const pass = (n?: number) =>
+    n === 1
+      ? "badge badge-pass"
+      : n === 0
+        ? "badge badge-fail"
+        : "badge badge-neutral";
+  return (
+    <div className="border border-[var(--rule)] rounded p-2 space-y-1.5">
+      <div className="flex items-center justify-between text-[11px]">
+        <div className="flex items-center gap-2">
+          <span className="font-mono-feat text-ink-3">T{ev.turn_index}</span>
+          {ev.boundary_type && (
+            <span className="badge badge-neutral text-[10px]">{ev.boundary_type}</span>
+          )}
+          {ev.in_shopping_context === false && (
+            <span className="badge badge-warn text-[10px]">非导购</span>
+          )}
+          {ev.confidence && (
+            <span className="text-ink-3 text-[10px] font-mono-feat">conf {ev.confidence}</span>
+          )}
+        </div>
+        <span className={`text-[10px] ${pass(ev.overall_score)}`}>
+          score {ev.overall_score ?? "—"}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+        <Dim1Cell tag="A" label="完整性" v={ev.A_completeness} reason={ev.A_reasoning} />
+        <Dim1Cell tag="B" label="无幻觉" v={ev.B_no_hallucination} reason={
+          ev.B_引入的幻觉词 && ev.B_引入的幻觉词.length
+            ? `幻觉词: ${ev.B_引入的幻觉词.join("、")}`
+            : undefined
+        } />
+        <Dim1Cell tag="C" label="补全合理" v={ev.C_reasonable_completion} reason={ev.C_reasoning} />
+      </div>
+      {ev.overall_explanation && (
+        <div className="text-[11px] text-ink-2 leading-relaxed border-t border-[var(--rule)] pt-1.5">
+          {ev.overall_explanation}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Dim1Cell({
+  tag,
+  label,
+  v,
+  reason,
+}: {
+  tag: string;
+  label: string;
+  v: number | undefined;
+  reason?: string;
+}) {
+  const color = v === 1 ? "text-moss" : v === 0 ? "text-tomato" : "text-ink-3";
+  return (
+    <div className="border border-[var(--rule)] rounded px-1.5 py-1 bg-card-2">
+      <div className="flex items-center justify-between">
+        <span className="font-mono-feat text-ink-3">{tag} {label}</span>
+        <span className={`font-mono-feat tabular-nums ${color}`}>{v ?? "—"}</span>
+      </div>
+      {reason && (
+        <div className="text-ink-2 mt-0.5 leading-tight whitespace-pre-wrap break-words">
+          {reason}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Dim2StructuredCard({ parsed }: { parsed: Dim2Parsed }) {
+  const retentionById = new Map(parsed.constraint_retention.map((r) => [r.id, r]));
+  return (
+    <div className="px-3 py-3 space-y-3 max-h-[28rem] overflow-auto">
+      <div className="flex items-center gap-3 text-xs text-ink-2">
+        {parsed.meta_id && (
+          <span className="font-mono-feat text-ink-3">meta {parsed.meta_id}</span>
+        )}
+        {parsed.total_score != null && (
+          <span className="badge badge-info text-[10px]">
+            total {parsed.total_score.toFixed(2)}
+          </span>
+        )}
+      </div>
+
+      {(parsed.reasoning_step1 || parsed.reasoning_step2 || parsed.reasoning_step3) && (
+        <div className="space-y-1 text-[11px]">
+          {parsed.reasoning_step1 && (
+            <ReasoningStep n={1} text={parsed.reasoning_step1} />
+          )}
+          {parsed.reasoning_step2 && (
+            <ReasoningStep n={2} text={parsed.reasoning_step2} />
+          )}
+          {parsed.reasoning_step3 && (
+            <ReasoningStep n={3} text={parsed.reasoning_step3} />
+          )}
+        </div>
+      )}
+
+      <div className="space-y-1.5">
+        <div className="uppercase-label text-ink-3 text-[10px]">约束保留</div>
+        {parsed.extracted_constraints.map((c) => {
+          const ret = retentionById.get(c.id);
+          return <Dim2ConstraintRow key={c.id} c={c} ret={ret} />;
+        })}
+      </div>
+
+      {parsed.explanation && (
+        <div className="text-[11px] text-ink-2 leading-relaxed border-t border-[var(--rule)] pt-2">
+          {parsed.explanation}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReasoningStep({ n, text }: { n: number; text: string }) {
+  return (
+    <div className="border border-[var(--rule)] rounded px-2 py-1 bg-card-2">
+      <span className="font-mono-feat text-ink-3 mr-1.5">step{n}</span>
+      <span className="text-ink-2 whitespace-pre-wrap">{text}</span>
+    </div>
+  );
+}
+
+function Dim2ConstraintRow({
+  c,
+  ret,
+}: {
+  c: Dim2Constraint;
+  ret?: Dim2Retention;
+}) {
+  const recall = ret?.recall;
+  const recallColor =
+    recall == null
+      ? "text-ink-3"
+      : recall >= 0.99
+        ? "text-moss"
+        : recall >= 0.6
+          ? "text-amber"
+          : "text-tomato";
+  const lifecycle =
+    c.invalidated_at != null
+      ? `T${c.introduced_at} → T${c.invalidated_at}${c.invalidation_reason ? ` (${c.invalidation_reason})` : ""}`
+      : c.introduced_at != null
+        ? `T${c.introduced_at} →`
+        : "—";
+  return (
+    <div className="border border-[var(--rule)] rounded p-1.5 text-[11px] space-y-0.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="font-mono-feat text-ink-3 shrink-0">{c.id}</span>
+          {c.importance && (
+            <span className={`badge text-[9px] ${c.importance === "核心" ? "badge-warn" : "badge-neutral"}`}>
+              {c.importance}·w{c.weight ?? 1}
+            </span>
+          )}
+          <span className="text-ink truncate">{c.type ? `${c.type}: ` : ""}{c.value || "—"}</span>
+        </div>
+        {recall != null && (
+          <span className={`font-mono-feat tabular-nums shrink-0 ${recallColor}`}>
+            {(recall * 100).toFixed(0)}%
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-3 text-[10px] text-ink-3 font-mono-feat">
+        <span>lifecycle {lifecycle}</span>
+        {ret?.should_appear_in_turns && ret.should_appear_in_turns.length > 0 && (
+          <span>
+            应出现 [{ret.should_appear_in_turns.join(",")}]
+          </span>
+        )}
+        {ret?.missed_at_turns && ret.missed_at_turns.length > 0 && (
+          <span className="text-tomato">缺失 [{ret.missed_at_turns.join(",")}]</span>
+        )}
+      </div>
     </div>
   );
 }
