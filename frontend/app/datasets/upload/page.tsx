@@ -226,17 +226,23 @@ export default function DatasetUploadWizardPage() {
   }
 
   return (
-    <div className="max-w-[1200px]">
-      <div className="mb-8">
-        <div className="uppercase-label text-ink-3 mb-2">
-          <Link href="/datasets" className="hover:text-moss">数据 / 评测集</Link>
-          {" / "}上传
+    <div className="mx-auto flex max-w-[1100px] min-w-0 flex-col gap-2xl pb-4xl">
+      <nav aria-label="Breadcrumb" className="text-caption uppercase tracking-[0.08em] text-ink-3">
+        <Link href="/datasets" className="transition-colors duration-fast ease-out hover:text-ink">数据 / 评测集</Link>
+        <span aria-hidden className="px-xs text-ink-4">/</span>
+        <span className="text-ink-2">上传</span>
+      </nav>
+      <header className="flex flex-col gap-sm">
+        <div className="text-caption uppercase tracking-[0.08em] text-ink-3">
+          <span className="font-mono tabular-nums">{step}/4</span>
+          <span aria-hidden className="px-xs text-ink-4">·</span>
+          <span className="italic-display normal-case tracking-normal">上传向导</span>
         </div>
-        <h1 className="font-display text-4xl font-medium tracking-tight">上传新评测集</h1>
-        <p className="text-ink-2 mt-2">
+        <h1 className="m-0 font-display text-h1 text-ink">上传新评测集</h1>
+        <p className="m-0 max-w-[68ch] text-lede italic-display text-ink-2">
           支持 Excel / CSV / JSON 多格式 · 自动字段映射 · 全量校验 · 5 条对话预览。
         </p>
-      </div>
+      </header>
 
       <StepIndicator current={step} />
 

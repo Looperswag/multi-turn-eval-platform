@@ -1,5 +1,8 @@
+/* Hallmark · macrostructure: Catalogue · theme: EvalKit Studio (custom) */
+
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { PageShell } from "@/components/page-shell";
 
 type BotVersion = {
   id: number;
@@ -18,76 +21,70 @@ async function getBotVersions(): Promise<BotVersion[]> {
 export default async function BotVersionsPage() {
   const bots = await getBotVersions();
   return (
-    <div className="max-w-[1100px]">
-      <div className="flex items-start justify-between mb-8 gap-6">
-        <div>
-          <div className="uppercase-label text-ink-3 mb-2">数据 / Bot 版本</div>
-          <h1 className="font-display text-4xl font-medium tracking-tight mb-2">Bot 版本</h1>
-          <p className="text-ink-2 max-w-2xl">
-            Bot 改写器的版本登记。每个 bot 版本可对接多份 dataset，从而做「模型横向对比」与「同模型迭代纵向追踪」。
-          </p>
-        </div>
+    <PageShell
+      eyebrow={{ label: "数据" }}
+      title="Bot 版本"
+      lede="Bot 改写器的版本登记。每个 bot 版本可对接多份 dataset，从而做模型横向对比与同模型迭代纵向追踪。"
+      meta={`共 ${bots.length} 个`}
+      actions={
         <Link
           href="/bot-versions/new"
-          className="shrink-0 px-4 py-2 bg-moss text-white text-sm rounded hover:opacity-90 no-underline"
+          className="inline-flex items-center gap-2xs border-b border-accent pb-[1px] text-sm font-medium text-accent transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
         >
-          + 新建 Bot 版本
+          新建 Bot 版本 <span aria-hidden>→</span>
         </Link>
-      </div>
-
-      <div className="bg-card border border-[var(--rule)] rounded">
-        {bots.length === 0 ? (
-          <div className="px-8 py-16 text-center text-ink-3">
-            还没有 bot 版本。点右上角「+ 新建 Bot 版本」开始登记，或运行{" "}
-            <code className="font-mono-feat bg-[var(--rule)] px-1.5">make seed</code> 灌入种子数据。
-          </div>
-        ) : (
+      }
+    >
+      {bots.length === 0 ? (
+        <div className="border-t border-rule py-2xl text-center text-lede italic-display text-ink-3">
+          尚无 bot 版本。点上方「新建 Bot 版本」开始登记，或 <code className="font-mono not-italic text-ink-2">make seed</code> 灌入种子。
+        </div>
+      ) : (
+        <div className="min-w-0 overflow-x-auto border-t border-rule">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-[var(--rule)] text-ink-3 uppercase-label">
-                <th className="px-5 py-3 text-left">ID</th>
-                <th className="px-5 py-3 text-left">名称</th>
-                <th className="px-5 py-3 text-left">版本标签</th>
-                <th className="px-5 py-3 text-left">Provider</th>
-                <th className="px-5 py-3 text-left">基础模型</th>
-                <th className="px-5 py-3 text-right">创建时间</th>
+              <tr className="border-b border-rule text-caption uppercase tracking-[0.08em] text-ink-3">
+                <th className="py-sm pr-md text-left font-normal">ID</th>
+                <th className="py-sm pr-md text-left font-normal">名称</th>
+                <th className="py-sm pr-md text-left font-normal">版本</th>
+                <th className="py-sm pr-md text-left font-normal">Provider</th>
+                <th className="py-sm pr-md text-left font-normal">基础模型</th>
+                <th className="py-sm text-right font-normal">创建</th>
               </tr>
             </thead>
             <tbody>
               {bots.map((b) => (
                 <tr
                   key={b.id}
-                  className="border-b border-[var(--rule)] last:border-0 hover:bg-[var(--rule)]/40"
+                  className="group border-b border-rule last:border-0 transition-colors duration-fast ease-out hover:bg-paper-2"
                 >
-                  <td className="px-5 py-3 font-mono-feat text-ink-3">
-                    <Link href={`/bot-versions/${b.id}`} className="no-underline text-ink-3 hover:text-ink">
+                  <td className="py-sm pr-md">
+                    <Link href={`/bot-versions/${b.id}`} className="block font-mono tabular-nums text-ink-3 transition-colors duration-fast ease-out group-hover:text-ink">
                       #{b.id}
                     </Link>
                   </td>
-                  <td className="px-5 py-3">
-                    <Link href={`/bot-versions/${b.id}`} className="no-underline text-ink hover:text-moss">
-                      <div>{b.name}</div>
-                      {b.description && (
-                        <div className="text-ink-3 text-xs">{b.description}</div>
-                      )}
+                  <td className="py-sm pr-md">
+                    <Link href={`/bot-versions/${b.id}`} className="block">
+                      <div className="text-ink transition-colors duration-fast ease-out group-hover:text-accent">{b.name}</div>
+                      {b.description ? (
+                        <div className="mt-2xs text-xs italic-display text-ink-3">{b.description}</div>
+                      ) : null}
                     </Link>
                   </td>
-                  <td className="px-5 py-3">
-                    <span className="badge badge-info font-mono-feat">{b.version_tag}</span>
+                  <td className="py-sm pr-md">
+                    <span className="badge badge-info font-mono">{b.version_tag}</span>
                   </td>
-                  <td className="px-5 py-3 text-ink-2">{b.bot_provider ?? "—"}</td>
-                  <td className="px-5 py-3 text-ink-2 font-mono-feat text-xs">
-                    {b.base_model ?? "—"}
-                  </td>
-                  <td className="px-5 py-3 text-right text-ink-3 text-xs">
-                    {new Date(b.created_at).toLocaleString()}
+                  <td className="py-sm pr-md text-ink-2">{b.bot_provider ?? "—"}</td>
+                  <td className="py-sm pr-md font-mono text-xs text-ink-2">{b.base_model ?? "—"}</td>
+                  <td className="py-sm text-right font-mono text-xs tabular-nums text-ink-3">
+                    {new Date(b.created_at).toLocaleDateString()}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </PageShell>
   );
 }

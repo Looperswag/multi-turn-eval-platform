@@ -19,6 +19,11 @@ class JudgePromptVersion(Base):
     weight: Mapped[float] = mapped_column(Float, default=0.0)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # 评估调用策略：per_turn / session_returns_per_turn / session_single_score
+    # 由 Dim1Dispatcher 等评估器读取以选择对应路径，取代基于模板嗅探的脆弱路由。
+    dimension_strategy: Mapped[str] = mapped_column(
+        String(64), default="per_turn", server_default="per_turn"
+    )
     parent_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("judge_prompt_version.id"), nullable=True
     )

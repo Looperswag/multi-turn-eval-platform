@@ -1,10 +1,12 @@
+/* Hallmark · macrostructure: Stat-Led (sub-variant) · theme: EvalKit Studio (custom) */
+
 import Link from "next/link";
 import { api, type DimensionSliceResponse, type EvalRun } from "@/lib/api";
 import { DimHistogram } from "@/components/dim-histogram";
 import { IssueClusterBar } from "@/components/issue-cluster-bar";
+import { SectionHead } from "@/components/section-head";
 
 const DIM_CODES = ["dim1", "dim2", "dim3", "dim4", "dim5", "dim6"] as const;
-
 type DimCode = (typeof DIM_CODES)[number];
 
 function isDimCode(v: string | undefined): v is DimCode {
@@ -20,14 +22,9 @@ async function getRun(id: string): Promise<EvalRun | null> {
   }
 }
 
-async function getSlice(
-  id: string,
-  code: DimCode,
-): Promise<DimensionSliceResponse | null> {
+async function getSlice(id: string, code: DimCode): Promise<DimensionSliceResponse | null> {
   try {
-    return await api<DimensionSliceResponse>(
-      `/api/eval-runs/${id}/dimensions/${code}`,
-    );
+    return await api<DimensionSliceResponse>(`/api/eval-runs/${id}/dimensions/${code}`);
   } catch (err) {
     console.error(`[getSlice ${id}/${code}]`, err);
     return null;
@@ -44,6 +41,14 @@ function fmtPercent(v: number | null | undefined): string {
   return `${(v * 100).toFixed(1)}%`;
 }
 
+function statusBadgeClass(status: string): string {
+  if (status === "success") return "badge badge-pass";
+  if (status === "failed") return "badge badge-fail";
+  if (status === "partial") return "badge badge-warn";
+  if (status === "cancelled") return "badge badge-neutral";
+  return "badge badge-info";
+}
+
 export default async function DimensionDetailPage({
   params,
   searchParams,
@@ -53,7 +58,6 @@ export default async function DimensionDetailPage({
 }) {
   const activeDim: DimCode = isDimCode(searchParams?.dim) ? searchParams!.dim! : "dim1";
 
-  // 并发拉取 run + 全部 6 维（tab 头要均值徽章）+ 当前激活维度详情已包含在内
   const [run, ...slices] = await Promise.all([
     getRun(params.id),
     ...DIM_CODES.map((code) => getSlice(params.id, code)),
@@ -61,10 +65,10 @@ export default async function DimensionDetailPage({
 
   if (!run) {
     return (
-      <div className="text-ink-3">
-        run #{params.id} 未找到。{" "}
-        <Link href="/eval-runs" className="text-moss">
-          返回列表
+      <div className="mx-auto flex max-w-[1200px] min-w-0 flex-col gap-md pb-4xl">
+        <h1 className="m-0 font-display text-h1 text-ink">未找到该评测</h1>
+        <Link href="/eval-runs" className="self-start border-b border-rule pb-[1px] text-sm text-ink-2 hover:border-ink hover:text-ink">
+          ← 返回评测任务
         </Link>
       </div>
     );
@@ -78,70 +82,59 @@ export default async function DimensionDetailPage({
   const slice = sliceByCode.get(activeDim);
 
   return (
-    <div className="max-w-[1200px]">
-      <div className="mb-2 text-ink-3 text-xs">
-        <Link href="/eval-runs" className="text-ink-2 hover:text-ink">
+    <div className="mx-auto flex max-w-[1200px] min-w-0 flex-col gap-3xl pb-4xl">
+      {/* Breadcrumb */}
+      <nav aria-label="Breadcrumb" className="text-caption uppercase tracking-[0.08em] text-ink-3">
+        <Link href="/eval-runs" className="transition-colors duration-fast ease-out hover:text-ink">
           评测任务
-        </Link>{" "}
-        /{" "}
-        <Link href={`/eval-runs/${run.id}`} className="text-ink-2 hover:text-ink">
+        </Link>
+        <span aria-hidden className="px-xs text-ink-4">/</span>
+        <Link href={`/eval-runs/${run.id}`} className="font-mono normal-case tracking-normal text-ink-3 transition-colors duration-fast ease-out hover:text-ink">
           #{run.id}
-        </Link>{" "}
-        / <span className="ml-1">维度详情</span>
-      </div>
-      <div className="flex items-baseline gap-4 mb-2">
-        <h1 className="font-display text-4xl font-medium tracking-tight">
-          {run.name}
-        </h1>
-        <span
-          className={`badge badge-${
-            run.status === "success"
-              ? "pass"
-              : run.status === "failed"
-                ? "fail"
-                : "info"
-          }`}
-        >
-          {run.status}
-        </span>
-      </div>
-      <p className="text-ink-2 mb-6 text-sm">
-        逐维度切片 · 直方图 · 触发率 · 典型 badcase 与问题归类
-      </p>
+        </Link>
+        <span aria-hidden className="px-xs text-ink-4">/</span>
+        <span className="text-ink-2">维度详情</span>
+      </nav>
 
-      {/* Tab bar — 每个 tab 显示维度名 + 均值徽章 */}
-      <div className="flex flex-wrap gap-2 mb-6 border-b border-[var(--rule)] pb-3">
+      {/* Title strip */}
+      <header className="flex flex-col gap-md">
+        <div className="flex flex-wrap items-baseline gap-md">
+          <h1 className="m-0 font-display text-h1 text-ink">{run.name}</h1>
+          <span className={statusBadgeClass(run.status)}>{run.status}</span>
+        </div>
+        <p className="m-0 max-w-[68ch] text-lede italic-display text-ink-2">
+          逐维度切片 · 直方图 · 触发率 · 典型 badcase 与问题归类。
+        </p>
+      </header>
+
+      {/* Dimension tabs — editorial, underline-based */}
+      <nav aria-label="维度" className="flex min-w-0 flex-wrap gap-x-md gap-y-xs border-b border-rule pb-xs">
         {DIM_CODES.map((code) => {
           const s = sliceByCode.get(code);
           const avg = s?.stats.avg_score ?? null;
           const active = code === activeDim;
-          const passColor = avg == null
-            ? "text-ink-3"
-            : avg >= 0.6
-              ? "text-moss"
-              : "text-tomato";
+          const passColor =
+            avg == null ? "text-ink-3" : avg >= 0.6 ? "text-accent" : "text-warn";
           return (
             <Link
               key={code}
               href={`/eval-runs/${run.id}/dimensions?dim=${code}`}
-              className={`px-3 py-1.5 rounded text-sm border transition-colors no-underline flex items-center gap-2 ${
+              className={`flex items-baseline gap-xs border-b-2 py-xs text-sm transition-colors duration-fast ease-out ${
                 active
-                  ? "border-moss bg-[var(--moss-bg)] text-ink"
-                  : "border-[var(--rule)] text-ink-2 hover:bg-[var(--rule)]"
+                  ? "border-b-ink text-ink"
+                  : "border-b-transparent text-ink-2 hover:border-b-rule-strong hover:text-ink"
               }`}
             >
-              <span className="font-mono-feat text-xs text-ink-3">{code}</span>
+              <span className="font-mono text-xs text-ink-3">{code}</span>
               <span>{s?.dim_name ?? code}</span>
-              <span className={`text-xs font-mono-feat tabular-nums ${passColor}`}>
-                {fmtScore(avg)}
-              </span>
+              <span className={`font-mono text-xs tabular-nums ${passColor}`}>{fmtScore(avg)}</span>
             </Link>
           );
         })}
-      </div>
+      </nav>
 
       {!slice ? (
-        <div className="text-ink-3 text-sm py-8">该维度切片加载失败。</div>
+        <div className="py-xl text-center text-lede italic-display text-ink-3">该维度切片加载失败。</div>
       ) : (
         <DimensionView slice={slice} runId={run.id} />
       )}
@@ -149,175 +142,148 @@ export default async function DimensionDetailPage({
   );
 }
 
-function DimensionView({
-  slice,
-  runId,
-}: {
-  slice: DimensionSliceResponse;
-  runId: number;
-}) {
+function DimensionView({ slice, runId }: { slice: DimensionSliceResponse; runId: number }) {
   const { stats, histogram, top_badcases, issue_clusters, prompt_version } = slice;
-  const passColor = (stats.avg_score ?? 0) >= 0.6 ? "moss" : "tomato";
+  const passing = (stats.avg_score ?? 0) >= 0.6;
+  const heroColor = passing ? "var(--color-accent)" : "var(--color-warn)";
 
   return (
     <>
-      {/* 4 大数字卡片 */}
-      <section className="grid grid-cols-4 gap-4 mb-8">
-        <div className="bg-card border border-[var(--rule)] rounded p-5">
-          <div className="uppercase-label text-ink-3 mb-2">平均分</div>
-          <div
-            className={`font-display text-4xl font-medium tabular-nums text-${passColor}`}
+      {/* Hero — 单数字主导 */}
+      <header className="grid grid-cols-1 gap-xl border-t border-rule pt-lg md:grid-cols-[auto_minmax(0,1fr)]">
+        <div className="flex flex-col gap-2xs">
+          <span className="text-caption uppercase tracking-[0.08em] text-ink-3">平均分</span>
+          <span
+            className="font-display tabular-nums leading-none"
+            style={{ fontSize: "var(--text-display)", color: heroColor }}
           >
             {fmtScore(stats.avg_score)}
-          </div>
-          <div className="text-ink-3 text-xs mt-1">
-            min {fmtScore(stats.min_score, 2)} · max{" "}
-            {fmtScore(stats.max_score, 2)}
-          </div>
+          </span>
+          <span className="font-mono text-xs tabular-nums text-ink-3">
+            min {fmtScore(stats.min_score, 2)} · max {fmtScore(stats.max_score, 2)}
+          </span>
         </div>
-        <div className="bg-card border border-[var(--rule)] rounded p-5">
-          <div className="uppercase-label text-ink-3 mb-2">通过率</div>
-          <div className="font-display text-4xl font-medium tabular-nums text-ink">
-            {fmtPercent(stats.pass_rate)}
+        <dl className="grid grid-cols-2 content-end gap-y-md text-sm md:grid-cols-3 md:gap-x-xl">
+          <div className="flex flex-col gap-2xs">
+            <dt className="text-caption uppercase tracking-[0.08em] text-ink-3">通过率</dt>
+            <dd className="m-0 font-mono tabular-nums text-h3 text-ink">{fmtPercent(stats.pass_rate)}</dd>
+            <span className="font-mono text-xs tabular-nums text-ink-3">
+              {stats.pass_count}/{stats.applicable_count} · 阈值 0.6
+            </span>
           </div>
-          <div className="text-ink-3 text-xs mt-1">
-            {stats.pass_count}/{stats.applicable_count} · 阈值 0.6
+          <div className="flex flex-col gap-2xs">
+            <dt className="text-caption uppercase tracking-[0.08em] text-ink-3">触发率</dt>
+            <dd className="m-0 font-mono tabular-nums text-h3 text-ink">{fmtPercent(stats.trigger_rate)}</dd>
+            <span className="font-mono text-xs tabular-nums text-ink-3">
+              适用 {stats.applicable_count}/{stats.total_cases}
+            </span>
           </div>
-        </div>
-        <div className="bg-card border border-[var(--rule)] rounded p-5">
-          <div className="uppercase-label text-ink-3 mb-2">触发率</div>
-          <div className="font-display text-4xl font-medium tabular-nums text-ink">
-            {fmtPercent(stats.trigger_rate)}
+          <div className="flex flex-col gap-2xs">
+            <dt className="text-caption uppercase tracking-[0.08em] text-ink-3">样本数</dt>
+            <dd className="m-0 font-mono tabular-nums text-h3 text-ink">{stats.total_cases}</dd>
+            <span className="font-mono text-xs tabular-nums text-ink-3">权重 {(slice.weight * 100).toFixed(0)}%</span>
           </div>
-          <div className="text-ink-3 text-xs mt-1">
-            适用 {stats.applicable_count} / 总 {stats.total_cases}
-          </div>
-        </div>
-        <div className="bg-card border border-[var(--rule)] rounded p-5">
-          <div className="uppercase-label text-ink-3 mb-2">样本数</div>
-          <div className="font-display text-4xl font-medium tabular-nums text-ink">
-            {stats.total_cases}
-          </div>
-          <div className="text-ink-3 text-xs mt-1">
-            权重 {(slice.weight * 100).toFixed(0)}%
-          </div>
-        </div>
-      </section>
+        </dl>
+      </header>
 
       {/* 直方图 + Prompt 版本 */}
-      <section className="grid grid-cols-[2fr_1fr] gap-6 mb-8">
-        <div className="bg-card border border-[var(--rule)] rounded p-6">
-          <div className="uppercase-label text-ink-3 mb-4">
-            分数分布 · {slice.dim_name}
+      <section className="flex flex-col gap-lg">
+        <SectionHead eyebrow="分布" title={`分数分布 · ${slice.dim_name}`} />
+        <div className="grid grid-cols-1 gap-xl lg:grid-cols-[2fr_1fr]">
+          <div className="min-w-0">
+            <DimHistogram buckets={histogram} />
           </div>
-          <DimHistogram buckets={histogram} />
-        </div>
-        <div className="bg-card border border-[var(--rule)] rounded p-6">
-          <div className="uppercase-label text-ink-3 mb-3">Prompt 版本</div>
-          {prompt_version ? (
-            <div>
-              <div className="flex items-baseline gap-2 mb-2">
-                <span className="font-display text-2xl font-medium">
-                  {prompt_version.version_tag}
-                </span>
-                <span className="text-ink-3 text-xs font-mono-feat">
-                  #{prompt_version.id}
-                </span>
-              </div>
-              <p className="text-ink-2 text-xs leading-relaxed">
-                {prompt_version.notes || "—"}
-              </p>
-            </div>
-          ) : (
-            <div className="text-ink-3 text-xs">未绑定 prompt 版本</div>
-          )}
+          <div className="flex flex-col gap-sm border-l-0 border-rule lg:border-l lg:pl-xl">
+            <div className="text-caption uppercase tracking-[0.08em] text-ink-3">Prompt 版本</div>
+            {prompt_version ? (
+              <>
+                <div className="flex items-baseline gap-sm">
+                  <span className="font-display text-h2 text-ink">{prompt_version.version_tag}</span>
+                  <span className="font-mono text-xs tabular-nums text-ink-3">#{prompt_version.id}</span>
+                </div>
+                <p className="m-0 text-xs leading-relaxed text-ink-2">{prompt_version.notes || "—"}</p>
+              </>
+            ) : (
+              <div className="text-xs italic-display text-ink-3">未绑定 prompt 版本</div>
+            )}
+          </div>
         </div>
       </section>
 
-      {/* Top 5 Badcase 表格 */}
-      <section className="bg-card border border-[var(--rule)] rounded p-6 mb-8">
-        <div className="uppercase-label text-ink-3 mb-4">
-          Top 5 Badcase · {slice.dim_name} 最低分
-        </div>
+      {/* Top badcase 表 */}
+      <section className="flex flex-col gap-md">
+        <SectionHead eyebrow="Badcase" title={`Top 5 · ${slice.dim_name} 最低分`} />
         {top_badcases.length === 0 ? (
-          <div className="text-ink-3 text-xs py-4">暂无适用样本。</div>
+          <div className="py-xl text-center text-lede italic-display text-ink-3">该维度暂无适用样本。</div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-ink-3 uppercase-label border-b border-[var(--rule)]">
-                <th className="text-left py-2">case</th>
-                <th className="text-left py-2">conv_id</th>
-                <th className="text-right py-2">维度分</th>
-                <th className="text-right py-2">加权分</th>
-                <th className="text-left py-2 pl-4">解释</th>
-              </tr>
-            </thead>
-            <tbody>
-              {top_badcases.map((b) => (
-                <tr
-                  key={b.case_id}
-                  className="border-b border-[var(--rule)] last:border-0"
-                >
-                  <td className="py-2">
-                    <Link
-                      href={`/eval-runs/${runId}/badcases?case_id=${b.case_id}`}
-                      className="text-moss hover:underline font-mono-feat text-xs"
-                    >
-                      #{b.case_id}
-                    </Link>
-                  </td>
-                  <td className="py-2 font-mono-feat text-xs text-ink-2">
-                    {b.conversation_id_src}
-                  </td>
-                  <td className="py-2 text-right font-mono-feat tabular-nums">
-                    <span
-                      className={
-                        (b.dim_score ?? 0) >= 0.6 ? "text-ink" : "text-tomato"
-                      }
-                    >
-                      {fmtScore(b.dim_score)}
-                    </span>
-                  </td>
-                  <td className="py-2 text-right font-mono-feat tabular-nums text-ink-2">
-                    {fmtScore(b.weighted_score)}
-                  </td>
-                  <td className="py-2 pl-4 text-ink-2 text-xs leading-relaxed">
-                    {b.explanation
-                      ? b.explanation.length > 80
-                        ? b.explanation.slice(0, 80) + "…"
-                        : b.explanation
-                      : "—"}
-                  </td>
+          <div className="min-w-0 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-rule text-caption uppercase tracking-[0.08em] text-ink-3">
+                  <th className="py-sm pr-md text-left font-normal">case</th>
+                  <th className="py-sm pr-md text-left font-normal">conv_id</th>
+                  <th className="py-sm pr-md text-right font-normal">维度分</th>
+                  <th className="py-sm pr-md text-right font-normal">加权分</th>
+                  <th className="py-sm text-left font-normal">解释</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {top_badcases.map((b) => (
+                  <tr key={b.case_id} className="border-b border-rule last:border-0 transition-colors duration-fast ease-out hover:bg-paper-2">
+                    <td className="py-sm pr-md">
+                      <Link
+                        href={`/eval-runs/${runId}/badcases?case_id=${b.case_id}`}
+                        className="border-b border-rule pb-[1px] font-mono text-xs text-accent transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
+                      >
+                        #{b.case_id}
+                      </Link>
+                    </td>
+                    <td className="py-sm pr-md font-mono text-xs text-ink-2">{b.conversation_id_src}</td>
+                    <td className="py-sm pr-md text-right font-mono tabular-nums">
+                      <span className={(b.dim_score ?? 0) >= 0.6 ? "text-ink" : "text-warn"}>
+                        {fmtScore(b.dim_score)}
+                      </span>
+                    </td>
+                    <td className="py-sm pr-md text-right font-mono tabular-nums text-ink-2">{fmtScore(b.weighted_score)}</td>
+                    <td className="py-sm text-xs italic-display leading-relaxed text-ink-2">
+                      {b.explanation
+                        ? b.explanation.length > 80
+                          ? b.explanation.slice(0, 80) + "…"
+                          : b.explanation
+                        : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
 
       {/* Issue cluster */}
-      <section className="bg-card border border-[var(--rule)] rounded p-6 mb-8">
-        <div className="uppercase-label text-ink-3 mb-4">
-          常见问题归类 · 关键词频次
-        </div>
+      <section className="flex flex-col gap-md">
+        <SectionHead eyebrow="问题归类" title="关键词频次" />
         <IssueClusterBar clusters={issue_clusters} />
       </section>
 
-      {/* 返回 */}
-      <div className="flex gap-3 flex-wrap">
-        <Link
-          href={`/eval-runs/${runId}`}
-          className="px-4 py-2 border border-[var(--rule-strong)] rounded text-sm hover:bg-[var(--rule)]"
-        >
-          ← 返回看板
-        </Link>
-        <Link
-          href={`/eval-runs/${runId}/badcases`}
-          className="px-4 py-2 border border-[var(--rule-strong)] rounded text-sm hover:bg-[var(--rule)]"
-        >
-          钻取 Badcase
-        </Link>
-      </div>
+      {/* Footer · navigation */}
+      <section className="flex flex-col gap-md border-t border-rule pt-lg">
+        <div className="text-caption uppercase tracking-[0.08em] text-ink-3">下一步</div>
+        <div className="flex flex-wrap items-center gap-xl text-sm">
+          <Link
+            href={`/eval-runs/${runId}`}
+            className="inline-flex items-center gap-2xs border-b border-rule pb-[1px] text-ink-2 transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
+          >
+            <span aria-hidden>←</span> 返回看板
+          </Link>
+          <Link
+            href={`/eval-runs/${runId}/badcases`}
+            className="inline-flex items-center gap-2xs border-b border-rule pb-[1px] text-ink-2 transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
+          >
+            钻取 Badcase <span aria-hidden>→</span>
+          </Link>
+        </div>
+      </section>
     </>
   );
 }

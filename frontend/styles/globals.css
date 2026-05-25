@@ -2,89 +2,104 @@
 @tailwind components;
 @tailwind utilities;
 
-/* === 设计 Token（从 demo HTML 提取） === */
-:root {
-  --bg: #F5F1EA;
-  --card: #FCFAF5;
-  --card-2: #FFFFFF;
-  --ink: #1A1815;
-  --ink-2: #5C5650;
-  --ink-3: #9B948C;
-  --ink-4: #C4BEB5;
-  --rule: rgba(26, 24, 21, 0.10);
-  --rule-strong: rgba(26, 24, 21, 0.20);
-  --tomato: #D85A30;
-  --tomato-bg: #FAEBE2;
-  --moss: #4A7C59;
-  --moss-bg: #E4EDE5;
-  --ink-blue: #2F5F8C;
-  --ink-blue-bg: #E5ECF3;
-  --amber: #B8842B;
-  --amber-bg: #F5EBD4;
+@import "./tokens.css";
 
-  --font-display: "Fraunces", Georgia, serif;
-  --font-body: "Manrope", -apple-system, sans-serif;
-  --font-mono: "JetBrains Mono", "SF Mono", Consolas, monospace;
-}
-
-* {
-  box-sizing: border-box;
-}
+/* ── Reset ──────────────────────────────────────────────────────── */
+* { box-sizing: border-box; }
 
 html,
 body {
-  background: var(--bg);
-  color: var(--ink);
+  background: var(--color-paper);
+  color: var(--color-ink);
   font-family: var(--font-body);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: var(--text-body);
+  line-height: 1.55;
   font-feature-settings: "tnum" 1, "ss01" 1;
   -webkit-font-smoothing: antialiased;
   margin: 0;
   padding: 0;
+  /* Hallmark mobile gate 62 — clip, never hidden */
+  overflow-x: clip;
 }
 
-.font-display {
+html { -webkit-text-size-adjust: 100%; }
+
+/* ── Display headings — long-word wrap (gate 63) ────────────────── */
+.font-display,
+h1, h2 {
   font-family: var(--font-display);
-  font-feature-settings: "tnum" 1;
+  font-feature-settings: "tnum" 1, "ss01" 1;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
-.font-mono-feat {
-  font-family: var(--font-mono);
+.font-mono-feat { font-family: var(--font-mono); }
+
+.italic-display {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-feature-settings: "tnum" 1, "ss01" 1;
 }
+
+/* ── Focus ring (≥ 3:1 contrast, never animated) ───────────────── */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Selection ─────────────────────────────────────────────────── */
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-ink);
+}
+
+/* ── Editorial label (caption tracking) ────────────────────────── */
 .uppercase-label {
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 500;
+  color: var(--color-ink-3);
 }
 
-/* 复用 demo 的状态徽章 */
+.eyebrow-italic {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: var(--text-xs);
+  letter-spacing: 0.02em;
+  color: var(--color-ink-3);
+}
+
+/* ── Badge family (status pills) ───────────────────────────────── */
 .badge {
   display: inline-flex;
   align-items: center;
   padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption);
   font-weight: 500;
   letter-spacing: 0.03em;
+  white-space: nowrap;
 }
-.badge-pass {
-  background: var(--moss-bg);
-  color: var(--moss);
+.badge-pass    { background: var(--color-accent-soft); color: var(--color-accent); }
+.badge-fail    { background: var(--color-warn-soft);   color: var(--color-warn); }
+.badge-warn    { background: var(--color-note-soft);   color: var(--color-note); }
+.badge-info    { background: var(--color-info-soft);   color: var(--color-info); }
+.badge-neutral { background: var(--color-rule);        color: var(--color-ink-2); }
+
+/* ── Link & button base hover (transform/opacity only) ─────────── */
+a, button {
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
 }
-.badge-fail {
-  background: var(--tomato-bg);
-  color: var(--tomato);
-}
-.badge-warn {
-  background: var(--amber-bg);
-  color: var(--amber);
-}
-.badge-info {
-  background: var(--ink-blue-bg);
-  color: var(--ink-blue);
-}
-.badge-neutral {
-  background: var(--rule);
-  color: var(--ink-2);
-}
+
+/* ── Tabular figures default for KPI / table cells ─────────────── */
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* ── Rule (hairline divider) ───────────────────────────────────── */
+.hairline-t { border-top: 1px solid var(--color-rule); }
+.hairline-b { border-bottom: 1px solid var(--color-rule); }

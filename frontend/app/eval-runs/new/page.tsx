@@ -132,13 +132,20 @@ export default function NewEvalRunPage() {
   }
 
   return (
-    <div className="max-w-[800px]">
-      <div className="mb-8">
-        <div className="uppercase-label text-ink-3 mb-2">评测 / 新建</div>
-        <h1 className="font-display text-4xl font-medium tracking-tight">新建评测任务</h1>
-      </div>
+    <div className="mx-auto flex max-w-[760px] min-w-0 flex-col gap-2xl pb-4xl">
+      <header className="flex flex-col gap-sm">
+        <div className="text-caption uppercase tracking-[0.08em] text-ink-3">
+          <span className="font-mono tabular-nums">1/1</span>
+          <span aria-hidden className="px-xs text-ink-4">·</span>
+          <span className="italic-display normal-case tracking-normal">评测 · 新建</span>
+        </div>
+        <h1 className="m-0 font-display text-h1 text-ink">新建评测任务</h1>
+        <p className="m-0 max-w-[68ch] text-lede italic-display text-ink-2">
+          绑定数据集 · bot 版本 · prompt 版本 · judge 模型 — 提交后由 Celery worker 异步执行。
+        </p>
+      </header>
 
-      <form onSubmit={submit} className="space-y-6">
+      <form onSubmit={submit} className="flex flex-col gap-xl border-t border-rule pt-lg">
         <Field label="任务名称">
           <input
             required

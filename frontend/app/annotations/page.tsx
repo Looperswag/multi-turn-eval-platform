@@ -191,23 +191,25 @@ export default function AnnotationWorkbenchPage() {
   }
 
   return (
-    <div className="max-w-[1800px]">
-      <div className="mb-6">
-        <div className="uppercase-label text-ink-3 mb-2">标注 / 工作台</div>
-        <div className="flex items-baseline justify-between">
-          <h1 className="font-display text-4xl font-medium tracking-tight">标注工作台</h1>
+    <div className="mx-auto flex max-w-[1800px] min-w-0 flex-col gap-xl pb-4xl">
+      <header className="flex flex-col gap-sm">
+        <div className="text-caption uppercase tracking-[0.08em] text-ink-3">
+          <span className="italic-display normal-case tracking-normal">标注 · 工作台</span>
+        </div>
+        <div className="flex flex-wrap items-baseline justify-between gap-md">
+          <h1 className="m-0 font-display text-h1 text-ink">标注工作台</h1>
           <Link
             href="/annotations/agreement"
-            className="text-sm text-moss hover:underline"
+            className="border-b border-rule pb-[1px] text-sm text-ink-2 transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
           >
-            一致率看板 →
+            一致率看板 <span aria-hidden>→</span>
           </Link>
         </div>
-        <p className="text-ink-2 mt-2 max-w-3xl">
+        <p className="m-0 max-w-[72ch] text-lede italic-display text-ink-2">
           按机评分（0 → 0.5 → 1 → N/A）优先级展示待标注 case，对照模型评分给出人评，可选「评分 / 不适用 / 跳过」。
           同一 annotator 对同一 (case, 维度) 多次提交将 UPSERT 覆盖。
         </p>
-      </div>
+      </header>
 
       {/* 顶部筛选条 */}
       <div className="bg-card border border-[var(--rule)] rounded p-4 mb-6 grid grid-cols-[1fr_2fr_1fr_auto] gap-4 items-end">

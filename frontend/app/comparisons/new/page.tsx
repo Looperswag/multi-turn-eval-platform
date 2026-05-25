@@ -98,16 +98,20 @@ export default function NewComparisonPage() {
   }
 
   return (
-    <div className="max-w-[820px]">
-      <div className="mb-8">
-        <div className="uppercase-label text-ink-3 mb-2">对比 / 新建</div>
-        <h1 className="font-display text-4xl font-medium tracking-tight">新建对比</h1>
-        <p className="text-ink-2 mt-2">
+    <div className="mx-auto flex max-w-[820px] min-w-0 flex-col gap-2xl pb-4xl">
+      <header className="flex flex-col gap-sm">
+        <div className="text-caption uppercase tracking-[0.08em] text-ink-3">
+          <span className="font-mono tabular-nums">1/1</span>
+          <span aria-hidden className="px-xs text-ink-4">·</span>
+          <span className="italic-display normal-case tracking-normal">对比 · 新建</span>
+        </div>
+        <h1 className="m-0 font-display text-h1 text-ink">新建对比</h1>
+        <p className="m-0 max-w-[68ch] text-lede italic-display text-ink-2">
           选定两个已完成的 run，平台自动检测差异并推荐对比类型（Prompt / Bot / Judge）。
         </p>
-      </div>
+      </header>
 
-      <form onSubmit={submit} className="space-y-6">
+      <form onSubmit={submit} className="flex flex-col gap-xl border-t border-rule pt-lg">
         <div className="grid grid-cols-2 gap-4">
           <Field label="Run A">
             <select

@@ -1,4 +1,4 @@
-.PHONY: dev up down logs seed migrate fmt test
+.PHONY: dev up down logs seed migrate fmt test judge-check
 
 dev:
 	docker compose up --build
@@ -24,3 +24,6 @@ fmt:
 
 test:
 	docker compose exec api pytest -q
+
+judge-check:
+	docker compose exec api python -m scripts.judge_selfcheck

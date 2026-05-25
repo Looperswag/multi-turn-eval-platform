@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import clsx from "clsx";
 import type { LiveProgressEvent } from "@/lib/api";
 
 type Progress = { completed: number; total: number; failed: number };
@@ -25,10 +26,10 @@ const DIM_LABELS: Record<string, string> = {
 const DIM_CODES = ["dim1", "dim2", "dim3", "dim4", "dim5", "dim6"] as const;
 
 function colorFor(score: number): string {
-  // 沿用 dimension-bar 的色阶
-  if (score < 0.6) return "#C66";
-  if (score < 0.8) return "#D4A55C";
-  return "#4A7C59";
+  // 沿用 dimension-bar 的色阶 — 颜色经由 CSS var 间接消费
+  if (score < 0.6) return "var(--color-warn)";
+  if (score < 0.8) return "var(--color-note)";
+  return "var(--color-accent)";
 }
 
 function formatEta(seconds: number | null | undefined): string {
@@ -173,45 +174,54 @@ export function LiveProgress({
 
   const showRetry = finished && progress.failed > 0;
 
+  const stateLabel = finished
+    ? progress.failed > 0
+      ? "部分失败"
+      : "完成"
+    : pct > 0
+      ? "运行中"
+      : "等待中";
+
   return (
-    <div className="mb-8 p-4 bg-[var(--ink-blue-bg)] border border-[var(--ink-blue)] rounded">
-      {/* 顶栏：标题 + 进度数字 + ETA */}
-      <div className="flex items-center justify-between mb-2 text-xs">
-        <span className="uppercase-label text-ink-blue">实时进度</span>
-        <span className="font-mono-feat text-ink-2 tabular-nums">
+    <section
+      data-state={finished ? (progress.failed > 0 ? "partial" : "done") : "running"}
+      className="mb-2xl flex flex-col gap-md border-t border-rule pt-md"
+      aria-label="评测进度"
+    >
+      {/* 顶栏 — 状态 · 计数 · ETA */}
+      <div className="flex flex-wrap items-baseline justify-between gap-md text-xs">
+        <span className="text-caption uppercase tracking-[0.08em] text-ink-3">
+          实时进度 <span className="italic-display text-ink-2 normal-case tracking-normal">· {stateLabel}</span>
+        </span>
+        <span className="font-mono tabular-nums text-ink-2">
           {progress.completed}/{progress.total} ({pct.toFixed(0)}%) · 失败 {progress.failed}
-          {!finished && (
-            <span className="ml-3 text-ink-3">
-              · 预计剩余 {formatEta(etaSeconds)}
-            </span>
-          )}
-          {finished && <span className="ml-3 text-moss">· 完成</span>}
+          {!finished && <span className="ml-md text-ink-3">· 预计剩余 {formatEta(etaSeconds)}</span>}
         </span>
       </div>
 
-      {/* 主进度条 */}
-      <div className="h-1.5 bg-white rounded overflow-hidden mb-4">
+      {/* 主进度条 — 极细 hairline */}
+      <div className="h-[2px] w-full overflow-hidden bg-rule">
         <div
-          className="h-full bg-[var(--ink-blue)] transition-all duration-500"
-          style={{ width: `${pct}%` }}
+          className="h-full transition-[width] duration-slow ease-out"
+          style={{ width: `${pct}%`, background: "var(--color-accent)" }}
         />
       </div>
 
       {/* per-dim mini bars */}
-      <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 mb-1">
+      <div className="grid grid-cols-1 gap-x-xl gap-y-2xs sm:grid-cols-2">
         {dimAvgList.map(({ code, name, avg, count }) => {
           const widthPct = avg == null ? 0 : Math.max(2, avg * 100);
-          const color = avg == null ? "#D8D2C8" : colorFor(avg);
+          const color = avg == null ? "var(--color-ink-4)" : colorFor(avg);
           return (
-            <div key={code} className="flex items-center gap-2 text-[11px]">
-              <span className="text-ink-3 w-16 shrink-0">{name}</span>
-              <div className="flex-1 h-1 bg-white rounded overflow-hidden">
+            <div key={code} className="flex items-center gap-sm text-xs">
+              <span className="w-16 shrink-0 text-ink-3">{name}</span>
+              <div className="h-[1px] flex-1 bg-rule">
                 <div
-                  className="h-full transition-all duration-500"
+                  className="h-full transition-[width] duration-slow ease-out"
                   style={{ width: `${widthPct}%`, background: color }}
                 />
               </div>
-              <span className="font-mono-feat tabular-nums text-ink-2 w-14 text-right">
+              <span className="w-16 shrink-0 text-right font-mono tabular-nums text-ink-2">
                 {avg == null ? "—" : `${avg.toFixed(2)} · ${count}`}
               </span>
             </div>
@@ -221,37 +231,40 @@ export function LiveProgress({
 
       {/* 失败 case 实时列表 */}
       {failedList.length > 0 && (
-        <div className="mt-4 pt-3 border-t border-[var(--ink-blue)]">
-          <div className="uppercase-label text-tomato text-[10px] mb-2">
-            失败 case（最新 {failedList.length} 条）
+        <div className="mt-xs border-t border-rule pt-sm">
+          <div className="mb-2xs text-caption uppercase tracking-[0.08em] text-warn">
+            失败 case · 最新 {failedList.length} 条
           </div>
-          <ul className="space-y-1 text-[11px] max-h-32 overflow-y-auto">
+          <ul className="max-h-32 list-none space-y-2xs overflow-y-auto p-0 text-xs">
             {failedList.map((f, i) => (
-              <li key={i} className="flex items-start gap-2 font-mono-feat">
-                <span className="text-ink-3 shrink-0">#{f.conversation_id}</span>
-                <span className="text-tomato">{truncate(f.error_message, 60)}</span>
+              <li key={i} className="flex items-start gap-sm font-mono">
+                <span className="shrink-0 text-ink-3">#{f.conversation_id}</span>
+                <span className="text-warn">{truncate(f.error_message, 60)}</span>
               </li>
             ))}
           </ul>
         </div>
       )}
 
-      {/* 重试按钮 */}
+      {/* 重试 — editorial 链接型 CTA */}
       {showRetry && (
-        <div className="mt-4 pt-3 border-t border-[var(--ink-blue)] flex items-center gap-3">
+        <div className="mt-xs flex flex-wrap items-center gap-md border-t border-rule pt-sm">
           <button
             type="button"
             onClick={handleRetry}
             disabled={retryBusy}
-            className="px-3 py-1.5 bg-tomato text-white text-xs font-medium rounded hover:opacity-90 disabled:opacity-50"
+            data-state={retryBusy ? "loading" : "idle"}
+            className={clsx(
+              "inline-flex items-center gap-2xs border-b border-warn pb-[1px] text-sm font-medium text-warn",
+              "transition-colors duration-fast ease-out hover:text-ink hover:border-ink",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+            )}
           >
-            {retryBusy ? "重试中…" : `重试 ${progress.failed} 个失败 case`}
+            {retryBusy ? "重试中…" : `重试 ${progress.failed} 个失败 case →`}
           </button>
-          {retryMsg && (
-            <span className="text-[11px] text-ink-2">{retryMsg}</span>
-          )}
+          {retryMsg && <span className="text-xs italic-display text-ink-2">{retryMsg}</span>}
         </div>
       )}
-    </div>
+    </section>
   );
 }

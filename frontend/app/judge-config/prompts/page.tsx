@@ -1,6 +1,9 @@
+/* Hallmark · macrostructure: Catalogue (6-dim grid variant) · theme: EvalKit Studio (custom) */
+
 import Link from "next/link";
 import { api } from "@/lib/api";
 import PromptVersionRow from "@/components/prompts/prompt-version-row";
+import { PageShell } from "@/components/page-shell";
 
 type PromptVersion = {
   id: number;
@@ -36,35 +39,27 @@ export default async function PromptsPage() {
   for (const p of prompts) {
     (byDim[p.dimension_code] ||= []).push(p);
   }
-  // 每维度版本按 updated_at 倒序
   for (const code of Object.keys(byDim)) {
     byDim[code].sort(
-      (a, b) =>
-        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+      (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
     );
   }
 
   return (
-    <div className="max-w-[1100px]">
-      <div className="mb-8 flex items-start justify-between gap-6">
-        <div>
-          <div className="uppercase-label text-ink-3 mb-2">配置 / Prompt 版本</div>
-          <h1 className="font-display text-4xl font-medium tracking-tight mb-2">
-            Prompt 全功能管理
-          </h1>
-          <p className="text-ink-2 max-w-2xl">
-            六大维度的判官 prompt 历史版本。一旦被 run 引用即不可改，需克隆为新草稿后编辑；每个维度恒有一个 active 版本，新建评测默认使用该版本。
-          </p>
-        </div>
+    <PageShell
+      eyebrow={{ label: "配置" }}
+      title="Prompt 版本管理"
+      lede="六大维度的判官 prompt 历史版本。一旦被 run 引用即不可改，需克隆为新草稿后编辑；每个维度恒有一个 active 版本。"
+      actions={
         <Link
           href="/judge-config/prompts/new"
-          className="shrink-0 px-4 py-2 bg-moss text-white text-sm rounded hover:opacity-90 no-underline"
+          className="inline-flex items-center gap-2xs border-b border-accent pb-[1px] text-sm font-medium text-accent transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
         >
-          + 新建草稿
+          新建草稿 <span aria-hidden>→</span>
         </Link>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+      }
+    >
+      <div className="grid grid-cols-1 gap-x-xl gap-y-2xl border-t border-rule pt-lg md:grid-cols-2">
         {DIM_ORDER.map((code) => {
           const name = DIM_NAMES[code];
           const list = byDim[code] || [];
@@ -73,27 +68,26 @@ export default async function PromptsPage() {
             (p) => !p.is_active && p.parent_version_id !== null,
           ).length;
           return (
-            <div
-              key={code}
-              className="bg-card border border-[var(--rule)] rounded p-5 flex flex-col gap-4"
-            >
-              <div className="flex items-start justify-between gap-3">
+            <article key={code} className="flex flex-col gap-md">
+              <header className="flex items-baseline justify-between gap-sm">
                 <div className="min-w-0">
-                  <div className="font-display text-xl text-ink truncate">{name}</div>
-                  <div className="font-mono-feat text-ink-3 text-xs mt-0.5">{code}</div>
+                  <div className="text-caption uppercase tracking-[0.08em] text-ink-3">
+                    <span className="font-mono">{code}</span>
+                  </div>
+                  <div className="mt-2xs font-display text-h2 text-ink">{name}</div>
                 </div>
-                <span className="text-ink-3 text-xs whitespace-nowrap">
-                  {list.length} 个版本
-                </span>
-              </div>
+                <div className="text-xs font-mono tabular-nums text-ink-3">
+                  {list.length} 版本
+                </div>
+              </header>
 
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex flex-wrap items-center gap-xs">
                 {active ? (
                   <>
-                    <span className="badge badge-pass font-mono-feat">
+                    <span className="badge badge-pass font-mono">
                       Active · {active.version_tag}
                     </span>
-                    <span className="text-ink-3 text-xs">
+                    <span className="text-xs italic-display text-ink-3">
                       权重 {active.weight}
                     </span>
                   </>
@@ -106,23 +100,23 @@ export default async function PromptsPage() {
               </div>
 
               {active?.notes && (
-                <div className="text-ink-2 text-xs leading-relaxed border-l-2 border-[var(--rule-strong)] pl-3 line-clamp-3">
+                <p className="border-l-2 border-rule-strong pl-md text-xs leading-relaxed text-ink-2 line-clamp-3">
                   {active.notes}
-                </div>
+                </p>
               )}
 
-              <div className="mt-auto pt-3 border-t border-[var(--rule)] flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-md border-t border-rule pt-sm text-sm">
                 {active && (
                   <Link
                     href={`/judge-config/prompts/${active.id}`}
-                    className="text-sm text-ink-blue no-underline hover:underline"
+                    className="border-b border-rule pb-[1px] text-ink-2 transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
                   >
-                    查看 active 详情 →
+                    查看 active <span aria-hidden>→</span>
                   </Link>
                 )}
                 <Link
                   href={`/judge-config/prompts/new?dim=${code}`}
-                  className="ml-auto text-sm text-ink-3 no-underline hover:text-ink"
+                  className="ml-auto border-b border-rule pb-[1px] text-ink-3 transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
                 >
                   新建草稿
                 </Link>
@@ -130,20 +124,20 @@ export default async function PromptsPage() {
 
               {list.length > 0 && (
                 <details className="text-xs" open={list.length <= 4}>
-                  <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">
-                    所有版本（{list.length}）· hover 显示操作
+                  <summary className="cursor-pointer select-none text-ink-3 transition-colors duration-fast ease-out hover:text-ink">
+                    所有版本 · {list.length}
                   </summary>
-                  <ul className="mt-2">
+                  <ul className="mt-xs list-none p-0">
                     {list.map((p) => (
                       <PromptVersionRow key={p.id} p={p} />
                     ))}
                   </ul>
                 </details>
               )}
-            </div>
+            </article>
           );
         })}
       </div>
-    </div>
+    </PageShell>
   );
 }

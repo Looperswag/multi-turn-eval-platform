@@ -1,0 +1,90 @@
+/* Hallmark · tokens · EvalKit Studio (custom theme)
+ * paper-band: light · display-style: italic-serif · accent-hue: chromatic-green
+ * Source: hex palette from W1 demo, perceptually round-tripped to OKLCH.
+ * Do not inline raw hex / rgb() / oklch() in component code — reference these vars by name.
+ */
+
+:root {
+  /* ── Paper · ink ─────────────────────────────────────────────── */
+  --color-paper:        oklch(95.0% 0.013 80);    /* #F5F1EA  beige */
+  --color-paper-2:      oklch(98.1% 0.008 80);    /* #FCFAF5  card  */
+  --color-paper-3:      oklch(100%  0     0);     /* #FFFFFF  card-2 */
+
+  --color-ink:          oklch(15.7% 0.005 60);    /* #1A1815  near-black warm */
+  --color-ink-2:        oklch(40.5% 0.008 60);    /* #5C5650  mid grey */
+  --color-ink-3:        oklch(63.4% 0.010 70);    /* #9B948C  caption grey */
+  --color-ink-4:        oklch(77.1% 0.012 75);    /* #C4BEB5  divider grey */
+
+  /* ── Accent (moss · forest green) ────────────────────────────── */
+  --color-accent:       oklch(49.0% 0.070 145);   /* #4A7C59  moss */
+  --color-accent-soft:  oklch(93.0% 0.018 145);   /* #E4EDE5  moss-bg */
+
+  /* ── Semantic accents ────────────────────────────────────────── */
+  --color-warn:         oklch(60.0% 0.180 35);    /* #D85A30  tomato */
+  --color-warn-soft:    oklch(94.0% 0.025 35);    /* #FAEBE2 */
+
+  --color-info:         oklch(45.0% 0.100 245);   /* #2F5F8C  ink-blue */
+  --color-info-soft:    oklch(93.0% 0.020 245);   /* #E5ECF3 */
+
+  --color-note:         oklch(60.0% 0.100 75);    /* #B8842B  amber */
+  --color-note-soft:    oklch(93.0% 0.040 85);    /* #F5EBD4 */
+
+  /* ── Rule (border / hairline) ────────────────────────────────── */
+  --color-rule:         color-mix(in oklch, var(--color-ink) 10%, transparent);
+  --color-rule-strong:  color-mix(in oklch, var(--color-ink) 20%, transparent);
+
+  /* ── Focus ring ──────────────────────────────────────────────── */
+  --color-focus:        oklch(45.0% 0.100 245);   /* same as info — high-contrast cool */
+
+  /* ── Font families ───────────────────────────────────────────── */
+  --font-display:  var(--font-display-loader, "Fraunces"), Georgia, "Songti SC", serif;
+  --font-body:     var(--font-body-loader,    "Manrope"),  -apple-system, "PingFang SC", system-ui, sans-serif;
+  --font-mono:     var(--font-mono-loader,    "JetBrains Mono"), "SF Mono", Consolas, monospace;
+
+  /* ── Type scale (editorial ramp) ─────────────────────────────── */
+  --text-display:    clamp(56px, 9vw, 144px);     /* Stat-Led KPI big number */
+  --text-display-s:  clamp(40px, 6vw, 88px);      /* hero headline ≤ 50char */
+  --text-h1:         clamp(28px, 3.2vw, 40px);    /* page heading */
+  --text-h2:         clamp(22px, 2.4vw, 28px);    /* section heading */
+  --text-h3:         18px;                        /* subsection heading */
+  --text-lede:       17px;                        /* page lede / description */
+  --text-body:       14px;                        /* default reading */
+  --text-sm:         13px;                        /* table cell, dense */
+  --text-xs:         12px;                        /* meta / caption */
+  --text-caption:    11px;                        /* eyebrow / label-tracking */
+
+  /* ── Spacing (4pt scale) ─────────────────────────────────────── */
+  --space-2xs:  4px;
+  --space-xs:   8px;
+  --space-sm:   12px;
+  --space-md:   16px;
+  --space-lg:   24px;
+  --space-xl:   32px;
+  --space-2xl:  48px;
+  --space-3xl:  64px;
+  --space-4xl:  96px;
+  --space-5xl:  128px;
+
+  /* ── Radius (editorial restraint) ────────────────────────────── */
+  --radius-sm:   2px;
+  --radius-md:   4px;
+  --radius-lg:   8px;          /* reserved — drawers, modals only */
+
+  /* ── Motion ──────────────────────────────────────────────────── */
+  --dur-fast:    120ms;
+  --dur-base:    200ms;
+  --dur-slow:    320ms;
+
+  --ease-out:        cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in:         cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out:     cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 80ms;
+    --dur-slow: 80ms;
+  }
+}

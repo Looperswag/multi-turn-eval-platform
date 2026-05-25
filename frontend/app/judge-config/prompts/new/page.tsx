@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
@@ -22,6 +22,14 @@ const DIM_NAMES: Record<string, string> = {
 const DIM_ORDER = ["dim1", "dim2", "dim3", "dim4", "dim5", "dim6"];
 
 export default function NewPromptPage() {
+  return (
+    <Suspense fallback={<div className="py-xl text-sm italic-display text-ink-3">载入中…</div>}>
+      <NewPromptInner />
+    </Suspense>
+  );
+}
+
+function NewPromptInner() {
   const router = useRouter();
   const sp = useSearchParams();
   const initialDim = sp.get("dim") || "dim1";
@@ -31,6 +39,9 @@ export default function NewPromptPage() {
   const [template, setTemplate] = useState("");
   const [weight, setWeight] = useState("0.1");
   const [notes, setNotes] = useState("");
+  const [strategy, setStrategy] = useState<
+    "per_turn" | "session_returns_per_turn" | "session_single_score"
+  >("per_turn");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -75,6 +86,7 @@ export default function NewPromptPage() {
             prompt_template: template,
             weight: Number.isNaN(w) ? 0 : w,
             notes: notes || null,
+            dimension_strategy: strategy,
           }),
         },
       );
@@ -162,6 +174,25 @@ export default function NewPromptPage() {
               onChange={(e) => setWeight(e.target.value)}
               className="w-full px-3 py-2 border border-[var(--rule-strong)] rounded bg-card-2 font-mono-feat"
             />
+          </Field>
+
+          <Field label="评估调用策略">
+            <select
+              value={strategy}
+              onChange={(e) => setStrategy(e.target.value as typeof strategy)}
+              className="w-full px-3 py-2 border border-[var(--rule-strong)] rounded bg-card-2"
+            >
+              <option value="per_turn">per_turn · 每轮调一次 judge</option>
+              <option value="session_returns_per_turn">
+                session_returns_per_turn · 一次调用返回每轮分
+              </option>
+              <option value="session_single_score">
+                session_single_score · 一次调用返回单一分
+              </option>
+            </select>
+            <span className="block text-ink-3 text-xs mt-1">
+              dim1 默认 per_turn；用户自定义 session 级 prompt 选第二种；dim2 / dim6 选第三种。
+            </span>
           </Field>
         </div>
 

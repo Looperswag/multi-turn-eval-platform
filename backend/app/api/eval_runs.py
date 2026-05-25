@@ -278,6 +278,67 @@ def list_cases(
     }
 
 
+@router.get("/{run_id}/sessions")
+def list_sessions(
+    run_id: int,
+    db: Session = Depends(get_db),
+    sort_by: str = "weighted_score",
+    sort_dir: str = "asc",
+    q: str = "",
+    limit: int = 1000,
+    offset: int = 0,
+):
+    """P0-4：返回 run 内全部 session 的概览（meta_id + total_turns + 各维度分 + 加权）。
+
+    与 /cases 的区别：
+    - join Conversation 取出 conversation_id_src（即 meta_id）和 total_turns
+    - 支持按任意维度 / 加权分 升降序
+    - 支持 meta_id 子串模糊搜索
+    - 默认返回全量（limit=1000），方便前端做客户端二次过滤
+    """
+    valid_sort = {
+        "weighted_score": EvalCaseResult.weighted_score,
+        "dim1_score": EvalCaseResult.dim1_score,
+        "dim2_score": EvalCaseResult.dim2_score,
+        "dim3_score": EvalCaseResult.dim3_score,
+        "dim4_score": EvalCaseResult.dim4_score,
+        "dim5_score": EvalCaseResult.dim5_score,
+        "dim6_score": EvalCaseResult.dim6_score,
+        "total_turns": Conversation.total_turns,
+        "meta_id": Conversation.conversation_id_src,
+    }
+    sort_col = valid_sort.get(sort_by, EvalCaseResult.weighted_score)
+    sort_col = sort_col.asc() if sort_dir == "asc" else sort_col.desc()
+
+    base = (
+        db.query(EvalCaseResult, Conversation)
+        .join(Conversation, Conversation.id == EvalCaseResult.conversation_id)
+        .filter(EvalCaseResult.eval_run_id == run_id)
+    )
+    if q.strip():
+        base = base.filter(Conversation.conversation_id_src.ilike(f"%{q.strip()}%"))
+    total = base.count()
+    rows = base.order_by(sort_col).offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "items": [
+            {
+                "case_id": r.id,
+                "conversation_id": r.conversation_id,
+                "meta_id": c.conversation_id_src,
+                "total_turns": c.total_turns,
+                "weighted_score": r.weighted_score,
+                "lowest_dim_code": r.lowest_dim_code,
+                "dim_scores": {
+                    f"dim{i}": getattr(r, f"dim{i}_score") for i in range(1, 7)
+                },
+                "error": r.error,
+            }
+            for r, c in rows
+        ],
+    }
+
+
 @router.get("/{run_id}/cases/{case_id}")
 def get_case(run_id: int, case_id: int, db: Session = Depends(get_db)):
     case = (

@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -188,6 +189,9 @@ _FIELD_ALIASES: dict[str, list[str]] = {
     "conversation_id": [
         "conversation_id", "conv_id", "conversationid", "convid",
         "session_id", "sessionid", "dialogue_id", "dialog_id",
+        # 线上简单导出格式：meta_id 是 session 维度的标识（同 meta_id = 同一会话）；
+        # 优先级前置以避免被 "id" 列名经子串匹配抢走。
+        "meta_id", "metaid", "meta_conversation_id",
         "会话id", "对话id", "session", "conversation",
     ],
     "turn_index": [
@@ -612,6 +616,11 @@ def transform(rows: list[dict[str, Any]], mapping: FieldMapping) -> list[dict[st
         }
         if rw_col:
             rw = _to_str(row.get(rw_col))
+            # Hive/SQL 导出常用 \N 表示 NULL；NULL/none 之类的字面 NULL 标记也统一归 None。
+            # 否则首轮真实的"无改写"会以字面 "\N" 残留进 BotRewrite，导致后续 evaluator
+            # 把它当作字符串"改写"，破坏 dim1 的「首轮无改写跳过」语义。
+            if rw.upper() in (r"\N", "NULL", "NONE"):
+                rw = ""
             pending["rewritten_query"] = rw or None
         if ts_display:
             pending["timestamp"] = ts_display
@@ -657,3 +666,249 @@ def parse_any(file_bytes: bytes, filename: str, format_hint: str | None = None) 
         return parse_json(file_bytes)
     # 兜底尝试 JSON
     return parse_json(file_bytes)
+
+
+# ---------------------------------------------------------------------------
+# 线上格式（A.4）：来自生产抓取的 Excel
+#   meta_conversation_id + historyquery + llm_resp 三列同时存在即触发
+# 直接产出嵌套 conv list（与 transform() 输出兼容），不走通用启发式映射
+# ---------------------------------------------------------------------------
+
+
+ONLINE_REQUIRED_COLUMNS = ("meta_conversation_id", "historyquery", "llm_resp")
+# 「线上简单格式」：生产线另一种导出 schema — 一行一轮，
+# 由 meta_id 分组、gmt_create 排序、首轮 rewritten_query 通常为 \N。
+# 命中后短路 4 步向导，沿用既有 transform() 完成嵌套化。
+ONLINE_SIMPLE_REQUIRED_COLUMNS = ("meta_id", "gmt_create", "user_query", "rewritten_query")
+# 解析 historyquery 字段中 `#第N轮问题：...` 与 `#第N轮追问：...` 段
+# 用 lookahead 把 (.+?) 截到下一个 `#第` 或字符串末尾，DOTALL 让 `.` 跨行匹配
+_HISTORY_BLOCK_RE = re.compile(
+    r"#第\s*(\d+)\s*轮\s*(问题|追问)\s*[：:]\s*(.*?)(?=\n\s*#第\s*\d+\s*轮|\Z)",
+    re.DOTALL,
+)
+
+
+def is_online_format(columns: list[str]) -> bool:
+    """三列同时出现才算命中（严格判定，避免误伤其它 Excel）。"""
+    lower = {(c or "").strip().lower() for c in columns}
+    return all(c.lower() in lower for c in ONLINE_REQUIRED_COLUMNS)
+
+
+def is_online_simple_format(columns: list[str]) -> bool:
+    """meta_id + gmt_create + user_query + rewritten_query 四列同时出现即命中。"""
+    lower = {(c or "").strip().lower() for c in columns}
+    return all(c.lower() in lower for c in ONLINE_SIMPLE_REQUIRED_COLUMNS)
+
+
+def parse_online_simple_excel(file_bytes: bytes) -> list[dict[str, Any]]:
+    """线上简单格式 Excel → 嵌套 conv list（与 parse_online_excel 输出结构兼容）。
+
+    内部直接复用 parse_excel + transform，传固定 FieldMapping（meta_id→conv_id、
+    gmt_create→turn_index_source=timestamp）。这样向导可直接进入预览/入库。
+    """
+    parsed = parse_excel(file_bytes)
+    mapping = FieldMapping(
+        conversation_id="meta_id",
+        turn_index="gmt_create",
+        user_query="user_query",
+        rewritten_query="rewritten_query",
+        turn_index_source="timestamp",
+    )
+    # 同列名可能存在大小写差异；规一化到 mapping 期望的字面值
+    norm_to_col = {(c or "").strip().lower(): c for c in parsed.columns}
+    for fld in ("conversation_id", "turn_index", "user_query", "rewritten_query"):
+        target = getattr(mapping, fld)
+        if target and target.lower() in norm_to_col:
+            setattr(mapping, fld, norm_to_col[target.lower()])
+    return transform(parsed.rows, mapping)
+
+
+def _parse_history_query(history_text: str) -> list[dict[str, Any]]:
+    """从 historyquery 字段抽出每轮 `(turn_index, kind, text)`，按 turn_index 聚合。
+
+    返回 list[{"turn_index": int, "user_query": str | None, "bot_response": str | None}]，
+    按 turn_index 升序。同 turn 出现多次问题/追问时拼接为多行字符串。
+    """
+    if not history_text:
+        return []
+    by_turn: dict[int, dict[str, list[str]]] = {}
+    for m in _HISTORY_BLOCK_RE.finditer(history_text):
+        idx = int(m.group(1))
+        kind = m.group(2)
+        text = m.group(3).strip()
+        if not text:
+            continue
+        slot = by_turn.setdefault(idx, {"问题": [], "追问": []})
+        slot[kind].append(text)
+    out: list[dict[str, Any]] = []
+    for idx in sorted(by_turn.keys()):
+        s = by_turn[idx]
+        out.append({
+            "turn_index": idx,
+            "user_query": ("\n".join(s["问题"]) if s["问题"] else None),
+            "bot_response": ("\n".join(s["追问"]) if s["追问"] else None),
+        })
+    return out
+
+
+def _parse_llm_resp(raw: Any) -> dict[str, Any]:
+    """`llm_resp` 列既可能是 dict、也可能是 JSON 字符串。返回标准化 dict。
+    任何解析失败均回空 dict，不抛错（数据脏的可能性较高）。
+    """
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, dict):
+        d = raw
+    elif isinstance(raw, str):
+        try:
+            d = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return {}
+    else:
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    return d
+
+
+def _normalize_constraints(val: Any) -> list[str] | None:
+    """约束列表标准化：None / 空 list / 非 list 都归一为 None，否则保留 str 元素。"""
+    if not isinstance(val, list):
+        return None
+    items = [str(x).strip() for x in val if x is not None and str(x).strip()]
+    return items if items else None
+
+
+def parse_online_excel(file_bytes: bytes, sheet_name: int | str = 0) -> list[dict[str, Any]]:
+    """线上 Excel 直接产出嵌套 conv list（每条 conv 含 turns，turn 含 bot 元信息）。
+
+    规则：
+    1. 按 `meta_conversation_id` 分组
+    2. 同 conv 内按 `gmt_create` 升序去重；同 `(conv_id, turn_index_from_history)` 取
+       gmt_create 最大者
+    3. 用 `historyquery` 重构 phantom 前置轮次（user_query 来自 `#第N轮问题`，
+       bot_response 来自 `#第N轮追问`，rewritten_query=None，其余 bot 元字段=None）
+    4. 当前 Excel 行 = phantom 列表之后的下一轮：turn_index = max(phantom) + 1
+    5. 输出 turn dict：
+        {
+          "turn_index", "user_query", "rewritten_query", "timestamp",
+          "bot_response", "intent_type",
+          "inherited_constraints", "dropped_constraints", "needs_rewrite"
+        }
+    """
+    parsed = parse_excel(file_bytes, sheet_name=sheet_name)
+    rows = parsed.rows
+    if not rows:
+        return []
+
+    # 用列名小写化简化访问
+    def col(row: dict, name: str) -> Any:
+        # 兼容大小写
+        if name in row:
+            return row[name]
+        for k in row.keys():
+            if k.lower() == name.lower():
+                return row[k]
+        return None
+
+    # 按 conv_id 分组
+    by_conv: dict[str, list[dict]] = {}
+    for r in rows:
+        cid_raw = col(r, "meta_conversation_id")
+        cid = "" if cid_raw is None else str(cid_raw).strip()
+        if not cid:
+            continue
+        by_conv.setdefault(cid, []).append(r)
+
+    out: list[dict[str, Any]] = []
+    for cid, raw_rows in by_conv.items():
+        # 行级排序：按 gmt_create 升序；同 ts 去重保留首条
+        def _ts(r: dict) -> datetime | None:
+            return _parse_datetime(col(r, "gmt_create"))
+        sorted_rows = sorted(
+            raw_rows,
+            key=lambda r: (_ts(r) or datetime.min),
+        )
+
+        # 用 historyquery 最长的那条作为前置基线（避免短 history 覆盖长 history）
+        baseline_row = max(
+            sorted_rows,
+            key=lambda r: len(str(col(r, "historyquery") or "")),
+        )
+        phantom_turns = _parse_history_query(str(col(baseline_row, "historyquery") or ""))
+
+        # turn_index → turn dict
+        merged: dict[int, dict[str, Any]] = {}
+        for ph in phantom_turns:
+            merged[ph["turn_index"]] = {
+                "turn_index": ph["turn_index"],
+                "user_query": ph["user_query"] or "",
+                "rewritten_query": None,
+                "timestamp": None,
+                "bot_response": ph["bot_response"],
+                "intent_type": None,
+                "inherited_constraints": None,
+                "dropped_constraints": None,
+                "needs_rewrite": None,
+            }
+
+        # 把 Excel 各行作为"新轮"叠加（覆盖同 idx 的 phantom）
+        # 关键：每行的 turn_index = 该行 historyquery 已含轮次的最大值 + 1
+        # 若没有 historyquery 则用全局推导（按 ts 升序 1..N）
+        ts_sorted_rows = [(r, _ts(r)) for r in sorted_rows]
+        fallback_idx = 0
+        for row, ts in ts_sorted_rows:
+            history = _parse_history_query(str(col(row, "historyquery") or ""))
+            if history:
+                this_idx = max(t["turn_index"] for t in history) + 1
+            else:
+                fallback_idx += 1
+                this_idx = fallback_idx
+            user_q = str(col(row, "ori_query") or col(row, "query") or "").strip()
+            rewrite = str(col(row, "rewritten_query") or "").strip() or None
+            meta = _parse_llm_resp(col(row, "llm_resp"))
+            ts_str = (
+                ts.strftime("%Y-%m-%d %H:%M:%S")
+                if isinstance(ts, datetime)
+                else (str(col(row, "gmt_create")).strip() or None)
+            )
+            # 该行所在 turn 的 bot_response 优先从 history 里取（若 history 有这一 idx 的追问），
+            # 否则保留 None（这是"当前正在 evaluate 的轮"，bot 还没回 → null 合理）
+            bot_resp_from_history = next(
+                (t["bot_response"] for t in history if t["turn_index"] == this_idx),
+                None,
+            )
+            merged[this_idx] = {
+                "turn_index": this_idx,
+                "user_query": user_q,
+                "rewritten_query": rewrite,
+                "timestamp": ts_str,
+                "bot_response": bot_resp_from_history,
+                "intent_type": (meta.get("intent_type") or None),
+                "inherited_constraints": _normalize_constraints(meta.get("inherited_constraints")),
+                "dropped_constraints": _normalize_constraints(meta.get("dropped_constraints")),
+                "needs_rewrite": (
+                    bool(meta["needs_rewrite"]) if "needs_rewrite" in meta else None
+                ),
+            }
+
+        # 按 idx 升序
+        turns_sorted = [merged[i] for i in sorted(merged.keys()) if merged[i]["user_query"]]
+        if not turns_sorted:
+            continue
+        # 重新归一化 turn_index 为 1..N（避免 historyquery 跳号导致评测端断序）
+        for new_idx, t in enumerate(turns_sorted, start=1):
+            t["turn_index"] = new_idx
+
+        out.append({
+            "conversation_id": cid,
+            "dimension_tag": None,
+            "quality_label": None,
+            "issue_type": None,
+            "total_turns": len(turns_sorted),
+            "turns": turns_sorted,
+        })
+
+    # 按 conversation_id 排序保持稳定性
+    out.sort(key=lambda c: c["conversation_id"])
+    return out

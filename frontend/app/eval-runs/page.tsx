@@ -1,12 +1,15 @@
+/* Hallmark · macrostructure: Catalogue · theme: EvalKit Studio (custom) */
+
 import Link from "next/link";
 import { api, type EvalRun } from "@/lib/api";
 import { EvalRunsTrend } from "@/components/eval-runs-trend";
+import { PageShell } from "@/components/page-shell";
+import { SectionHead } from "@/components/section-head";
 
 async function getRuns(): Promise<EvalRun[]> {
   return api<EvalRun[]>("/api/eval-runs");
 }
 
-// 浏览器侧下载用的 origin（与 lib/api.ts 的 client 分支一致）
 const BROWSER_API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
@@ -27,104 +30,111 @@ export default async function EvalRunsPage() {
   const completedCount = runs.filter(
     (r) => r.weighted_score != null && (r.status === "success" || r.status === "partial"),
   ).length;
+
   return (
-    <div className="max-w-[1200px]">
-      <div className="mb-8">
-        <div className="uppercase-label text-ink-3 mb-2">评测 / 任务队列</div>
-        <h1 className="font-display text-4xl font-medium tracking-tight mb-2">评测任务</h1>
-        <p className="text-ink-2 max-w-2xl">
-          每个 run 绑定一份评测集、一个 bot 版本、一套 prompt 版本和一个 judge 模型。
-          创建后由 Celery worker 异步执行，可在详情页看实时进度。
-        </p>
-      </div>
-
-      {/* 历史趋势 mini chart */}
-      <div className="mb-6 bg-card border border-[var(--rule)] rounded">
-        <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--rule)]">
-          <div className="uppercase-label text-ink-3">加权总分历史趋势</div>
-          <div className="text-ink-3 text-xs">
-            {completedCount} 个已完成 run · 红线 = 准出门槛 0.6
-          </div>
-        </div>
-        <EvalRunsTrend runs={runs} />
-      </div>
-
-      <div className="mb-6 flex justify-end">
+    <PageShell
+      eyebrow={{ label: "评测" }}
+      title="评测任务"
+      lede="每个 run 绑定一份评测集、一个 bot 版本、一套 prompt 版本与一个 judge 模型。创建后由 Celery worker 异步执行。"
+      meta={`共 ${runs.length} 个 · 已完成 ${completedCount}`}
+      actions={
         <Link
           href="/eval-runs/new"
-          className="inline-flex items-center px-4 py-2 bg-moss text-white text-sm font-medium rounded hover:opacity-90 transition-opacity"
+          className="inline-flex items-center gap-2xs border-b border-accent pb-[1px] text-sm font-medium text-accent transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
         >
-          + 新建评测
+          新建评测 <span aria-hidden>→</span>
         </Link>
-      </div>
+      }
+    >
+      <section className="flex flex-col gap-md">
+        <SectionHead
+          eyebrow="历史"
+          title="加权总分趋势"
+          caption="红线为准出门槛 0.6；横向序号 = run.id 升序。"
+          meta={`${completedCount} 个已完成`}
+        />
+        <div className="min-w-0">
+          <EvalRunsTrend runs={runs} />
+        </div>
+      </section>
 
-      <div className="bg-card border border-[var(--rule)] rounded">
+      <section className="flex flex-col gap-md">
+        <SectionHead eyebrow="队列" title="所有 run" />
         {runs.length === 0 ? (
-          <div className="px-8 py-16 text-center text-ink-3">
-            还没有评测任务。<Link className="text-moss underline" href="/eval-runs/new">创建一个</Link>。
+          <div className="py-2xl text-center text-lede italic-display text-ink-3">
+            尚无评测任务。
+            <Link href="/eval-runs/new" className="ml-xs border-b border-rule pb-[1px] text-ink-2 hover:border-ink hover:text-ink">
+              创建第一个 →
+            </Link>
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-[var(--rule)] text-ink-3 uppercase-label">
-                <th className="px-5 py-3 text-left">ID</th>
-                <th className="px-5 py-3 text-left">名称</th>
-                <th className="px-5 py-3 text-left">状态</th>
-                <th className="px-5 py-3 text-right">进度</th>
-                <th className="px-5 py-3 text-right">加权总分</th>
-                <th className="px-5 py-3 text-right">通过率</th>
-                <th className="px-5 py-3 text-right">创建时间</th>
-                <th className="px-5 py-3 text-right">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((r) => {
-                const canExport = r.status === "success" || r.status === "partial";
-                return (
-                  <tr key={r.id} className="border-b border-[var(--rule)] last:border-0 hover:bg-[var(--bg)]">
-                    <td className="px-5 py-3 font-mono-feat text-ink-3">#{r.id}</td>
-                    <td className="px-5 py-3">
-                      <Link className="text-ink hover:text-moss" href={`/eval-runs/${r.id}`}>
-                        {r.name}
-                      </Link>
-                    </td>
-                    <td className="px-5 py-3">
-                      <StatusBadge status={r.status} />
-                    </td>
-                    <td className="px-5 py-3 text-right font-mono-feat">
-                      {r.completed}/{r.total}
-                      {r.failed > 0 && <span className="text-tomato"> ·{r.failed}失败</span>}
-                    </td>
-                    <td className="px-5 py-3 text-right font-mono-feat tabular-nums">
-                      {r.weighted_score == null ? "—" : r.weighted_score.toFixed(3)}
-                    </td>
-                    <td className="px-5 py-3 text-right font-mono-feat tabular-nums">
-                      {r.pass_rate == null ? "—" : `${(r.pass_rate * 100).toFixed(1)}%`}
-                    </td>
-                    <td className="px-5 py-3 text-right text-ink-3 text-xs">
-                      {new Date(r.created_at).toLocaleString()}
-                    </td>
-                    <td className="px-5 py-3 text-right">
-                      {/* 列表导出仅 xlsx; 详情页可选 md/pdf */}
-                      {canExport ? (
-                        <a
-                          href={`${BROWSER_API_BASE}/api/eval-runs/${r.id}/export?format=xlsx`}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-[var(--rule-strong)] rounded hover:bg-moss hover:text-white hover:border-moss no-underline transition-colors"
-                          title="导出 Excel 报告（详情页可选 MD/PDF）"
+          <div className="min-w-0 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-rule text-caption uppercase tracking-[0.08em] text-ink-3">
+                  <th className="py-sm pr-md text-left font-normal">ID</th>
+                  <th className="py-sm pr-md text-left font-normal">名称</th>
+                  <th className="py-sm pr-md text-left font-normal">状态</th>
+                  <th className="py-sm pr-md text-right font-normal">进度</th>
+                  <th className="py-sm pr-md text-right font-normal">加权</th>
+                  <th className="py-sm pr-md text-right font-normal">通过率</th>
+                  <th className="py-sm pr-md text-right font-normal">创建</th>
+                  <th className="py-sm text-right font-normal">导出</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r) => {
+                  const canExport = r.status === "success" || r.status === "partial";
+                  return (
+                    <tr
+                      key={r.id}
+                      className="border-b border-rule last:border-0 transition-colors duration-fast ease-out hover:bg-paper-2"
+                    >
+                      <td className="py-sm pr-md font-mono tabular-nums text-ink-3">#{r.id}</td>
+                      <td className="py-sm pr-md">
+                        <Link
+                          href={`/eval-runs/${r.id}`}
+                          className="text-ink transition-colors duration-fast ease-out hover:text-accent"
                         >
-                          导出
-                        </a>
-                      ) : (
-                        <span className="text-ink-3 text-xs">—</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                          {r.name}
+                        </Link>
+                      </td>
+                      <td className="py-sm pr-md">
+                        <StatusBadge status={r.status} />
+                      </td>
+                      <td className="py-sm pr-md text-right font-mono tabular-nums">
+                        {r.completed}<span className="text-ink-3">/{r.total}</span>
+                        {r.failed > 0 && <span className="text-warn"> ·{r.failed}失败</span>}
+                      </td>
+                      <td className="py-sm pr-md text-right font-mono tabular-nums">
+                        {r.weighted_score == null ? "—" : r.weighted_score.toFixed(3)}
+                      </td>
+                      <td className="py-sm pr-md text-right font-mono tabular-nums">
+                        {r.pass_rate == null ? "—" : `${(r.pass_rate * 100).toFixed(1)}%`}
+                      </td>
+                      <td className="py-sm pr-md text-right font-mono text-xs tabular-nums text-ink-3">
+                        {new Date(r.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="py-sm text-right">
+                        {canExport ? (
+                          <a
+                            href={`${BROWSER_API_BASE}/api/eval-runs/${r.id}/export?format=xlsx`}
+                            className="inline-flex items-center gap-2xs border-b border-rule pb-[1px] text-xs text-ink-2 transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
+                          >
+                            xlsx ↓
+                          </a>
+                        ) : (
+                          <span className="text-xs text-ink-4">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
-      </div>
-    </div>
+      </section>
+    </PageShell>
   );
 }

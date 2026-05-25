@@ -1,5 +1,8 @@
+/* Hallmark · macrostructure: Catalogue (card-grid variant) · theme: EvalKit Studio (custom) */
+
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { PageShell } from "@/components/page-shell";
 
 type JudgeModel = {
   id: number;
@@ -18,58 +21,60 @@ async function getModels(): Promise<JudgeModel[]> {
 
 export default async function JudgeModelsPage() {
   const models = await getModels();
-
   return (
-    <div className="max-w-[1100px]">
-      <div className="mb-8 flex items-start justify-between gap-6">
-        <div>
-          <div className="uppercase-label text-ink-3 mb-2">配置 / Judge 模型</div>
-          <h1 className="font-display text-4xl font-medium tracking-tight mb-2">Judge 模型</h1>
-          <p className="text-ink-2 max-w-2xl">
-            评测平台支持的 LLM judge。每个 eval_run 绑定一个模型；可通过「新建对比」做 judge 模型一致性分析。
-          </p>
-        </div>
+    <PageShell
+      eyebrow={{ label: "配置" }}
+      title="Judge 模型"
+      lede="评测平台支持的 LLM judge。每个 eval_run 绑定一个模型；可通过「新建对比」做 judge 模型一致性分析。"
+      meta={`共 ${models.length} 个`}
+      actions={
         <Link
           href="/judge-config/models/new"
-          className="shrink-0 px-4 py-2 bg-moss text-white text-sm rounded hover:opacity-90"
+          className="inline-flex items-center gap-2xs border-b border-accent pb-[1px] text-sm font-medium text-accent transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
         >
-          + 注册新模型
+          注册新模型 <span aria-hidden>→</span>
         </Link>
-      </div>
-
+      }
+    >
       {models.length === 0 ? (
-        <div className="bg-card border border-[var(--rule)] rounded px-8 py-16 text-center text-ink-3">
-          还没有注册任何 judge 模型。点击右上角「+ 注册新模型」开始。
+        <div className="border-t border-rule py-2xl text-center text-lede italic-display text-ink-3">
+          尚无注册的 judge 模型。点上方「注册新模型」开始。
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-md border-t border-rule pt-lg md:grid-cols-2">
           {models.map((m) => (
             <Link
               key={m.id}
               href={`/judge-config/models/${m.id}`}
-              className="bg-card border border-[var(--rule)] rounded p-5 hover:border-[var(--rule-strong)] transition-colors block"
+              className="group flex flex-col gap-md border-b border-rule pb-lg transition-colors duration-fast ease-out hover:border-rule-strong"
             >
-              <div className="flex items-start justify-between gap-3 mb-3">
-                <span className="badge badge-info">{m.provider}</span>
+              <div className="flex items-baseline justify-between gap-sm">
+                <span className="badge badge-info font-mono">{m.provider}</span>
                 {m.is_default && <span className="badge badge-pass">默认</span>}
               </div>
-              <div className="font-display text-2xl font-medium text-ink mb-1.5 leading-tight">{m.name}</div>
-              <div className="font-mono-feat text-xs text-ink-3 mb-4 break-all">{m.model_id}</div>
-              <div className="flex items-center gap-4 text-xs text-ink-3 pt-3 border-t border-[var(--rule)]">
-                <span>
-                  <span className="uppercase-label">temp</span>{" "}
-                  <span className="font-mono-feat tabular-nums text-ink-2">{m.temperature.toFixed(2)}</span>
-                </span>
-                <span>
-                  <span className="uppercase-label">max</span>{" "}
-                  <span className="font-mono-feat tabular-nums text-ink-2">{m.max_tokens ?? "—"}</span>
-                </span>
-                <span className="ml-auto text-ink-3">{new Date(m.created_at).toLocaleDateString()}</span>
+              <div>
+                <div className="font-display text-h2 text-ink transition-colors duration-fast ease-out group-hover:text-accent">
+                  {m.name}
+                </div>
+                <div className="mt-2xs break-all font-mono text-xs text-ink-3">{m.model_id}</div>
               </div>
+              <dl className="flex items-baseline gap-xl border-t border-rule pt-sm text-xs">
+                <div className="flex items-baseline gap-xs">
+                  <dt className="text-caption uppercase tracking-[0.08em] text-ink-3">temp</dt>
+                  <dd className="m-0 font-mono tabular-nums text-ink-2">{m.temperature.toFixed(2)}</dd>
+                </div>
+                <div className="flex items-baseline gap-xs">
+                  <dt className="text-caption uppercase tracking-[0.08em] text-ink-3">max</dt>
+                  <dd className="m-0 font-mono tabular-nums text-ink-2">{m.max_tokens ?? "—"}</dd>
+                </div>
+                <span className="ml-auto font-mono text-ink-3">
+                  {new Date(m.created_at).toLocaleDateString()}
+                </span>
+              </dl>
             </Link>
           ))}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

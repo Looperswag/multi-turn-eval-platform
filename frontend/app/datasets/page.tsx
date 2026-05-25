@@ -1,5 +1,8 @@
+/* Hallmark · macrostructure: Catalogue · theme: EvalKit Studio (custom) */
+
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { PageShell } from "@/components/page-shell";
 
 type Dataset = {
   id: number;
@@ -17,73 +20,70 @@ async function getDatasets(): Promise<Dataset[]> {
 export default async function DatasetsPage() {
   const datasets = await getDatasets();
   return (
-    <div className="max-w-[1100px]">
-      <div className="mb-8">
-        <div className="uppercase-label text-ink-3 mb-2">数据 / 评测集</div>
-        <h1 className="font-display text-4xl font-medium tracking-tight mb-2">评测集</h1>
-        <p className="text-ink-2 max-w-2xl">
-          原始多轮 query 集合。与 bot 改写解耦：同一个 dataset 可对接多个 bot 版本，从而支持「bot 模型横向对比」。
-        </p>
-        <p className="text-ink-3 text-xs mt-2">点击任意一行可预览数据结构与会话内容。</p>
-      </div>
-
-      <div className="mb-6 flex justify-end">
+    <PageShell
+      eyebrow={{ label: "数据" }}
+      title="评测集"
+      lede="原始多轮 query 集合。与 bot 改写解耦：同一份 dataset 可对接多个 bot 版本，从而支持 bot 模型横向对比。"
+      meta={`共 ${datasets.length} 份`}
+      actions={
         <Link
           href="/datasets/upload"
-          className="inline-flex items-center px-4 py-2 bg-moss text-white text-sm font-medium rounded hover:opacity-90 transition-opacity"
+          className="inline-flex items-center gap-2xs border-b border-accent pb-[1px] text-sm font-medium text-accent transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
         >
-          + 上传新评测集
+          上传新评测集 <span aria-hidden>→</span>
         </Link>
-      </div>
-
-      <div className="bg-card border border-[var(--rule)] rounded">
-        {datasets.length === 0 ? (
-          <div className="px-8 py-16 text-center text-ink-3">
-            还没有评测集。请运行 <code className="font-mono-feat bg-[var(--rule)] px-1.5">make seed</code> 灌入种子数据，或通过 API 上传。
-          </div>
-        ) : (
+      }
+    >
+      {datasets.length === 0 ? (
+        <div className="border-t border-rule py-2xl text-center text-lede italic-display text-ink-3">
+          尚无评测集。先跑 <code className="font-mono not-italic text-ink-2">make seed</code> 灌入种子，或上传一份。
+        </div>
+      ) : (
+        <div className="min-w-0 overflow-x-auto border-t border-rule">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-[var(--rule)] text-ink-3 uppercase-label">
-                <th className="px-5 py-3 text-left">ID</th>
-                <th className="px-5 py-3 text-left">名称</th>
-                <th className="px-5 py-3 text-left">版本</th>
-                <th className="px-5 py-3 text-right">会话数</th>
-                <th className="px-5 py-3 text-right">创建时间</th>
+              <tr className="border-b border-rule text-caption uppercase tracking-[0.08em] text-ink-3">
+                <th className="py-sm pr-md text-left font-normal">ID</th>
+                <th className="py-sm pr-md text-left font-normal">名称</th>
+                <th className="py-sm pr-md text-left font-normal">版本</th>
+                <th className="py-sm pr-md text-right font-normal">会话数</th>
+                <th className="py-sm text-right font-normal">创建</th>
               </tr>
             </thead>
             <tbody>
               {datasets.map((d) => (
                 <tr
                   key={d.id}
-                  className="border-b border-[var(--rule)] last:border-0 hover:bg-[var(--moss-bg)]/40 transition-colors group"
+                  className="group border-b border-rule last:border-0 transition-colors duration-fast ease-out hover:bg-paper-2"
                 >
-                  <td className="px-5 py-3 font-mono-feat text-ink-3">
-                    <Link href={`/datasets/${d.id}`} className="block">#{d.id}</Link>
-                  </td>
-                  <td className="px-5 py-3">
-                    <Link href={`/datasets/${d.id}`} className="block">
-                      <div className="text-ink group-hover:text-moss group-hover:underline underline-offset-4 decoration-1">{d.name}</div>
-                      {d.description && <div className="text-ink-3 text-xs mt-0.5">{d.description}</div>}
+                  <td className="py-sm pr-md">
+                    <Link href={`/datasets/${d.id}`} className="block font-mono tabular-nums text-ink-3 transition-colors duration-fast ease-out group-hover:text-ink">
+                      #{d.id}
                     </Link>
                   </td>
-                  <td className="px-5 py-3">
+                  <td className="py-sm pr-md">
                     <Link href={`/datasets/${d.id}`} className="block">
-                      <span className="badge badge-neutral">{d.version}</span>
+                      <div className="text-ink transition-colors duration-fast ease-out group-hover:text-accent">
+                        {d.name}
+                      </div>
+                      {d.description ? (
+                        <div className="mt-2xs text-xs italic-display text-ink-3">{d.description}</div>
+                      ) : null}
                     </Link>
                   </td>
-                  <td className="px-5 py-3 text-right font-mono-feat tabular-nums">
-                    <Link href={`/datasets/${d.id}`} className="block">{d.conversation_count}</Link>
+                  <td className="py-sm pr-md">
+                    <span className="badge badge-neutral font-mono">{d.version}</span>
                   </td>
-                  <td className="px-5 py-3 text-right text-ink-3 text-xs">
-                    <Link href={`/datasets/${d.id}`} className="block">{new Date(d.created_at).toLocaleString()}</Link>
+                  <td className="py-sm pr-md text-right font-mono tabular-nums">{d.conversation_count}</td>
+                  <td className="py-sm text-right font-mono text-xs tabular-nums text-ink-3">
+                    {new Date(d.created_at).toLocaleDateString()}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </PageShell>
   );
 }

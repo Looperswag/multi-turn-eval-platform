@@ -64,20 +64,25 @@ export default function AgreementDashboardPage() {
   }, [runId, annotator, merge]);
 
   return (
-    <div className="max-w-[1500px]">
-      <div className="mb-6">
-        <div className="uppercase-label text-ink-3 mb-2">标注 / 一致率看板</div>
-        <div className="flex items-baseline justify-between">
-          <h1 className="font-display text-4xl font-medium tracking-tight">一致率看板</h1>
-          <Link href="/annotations" className="text-sm text-moss hover:underline">
-            ← 返回工作台
+    <div className="mx-auto flex max-w-[1500px] min-w-0 flex-col gap-2xl pb-4xl">
+      <header className="flex flex-col gap-sm">
+        <div className="text-caption uppercase tracking-[0.08em] text-ink-3">
+          <span className="italic-display normal-case tracking-normal">标注 · 一致率</span>
+        </div>
+        <div className="flex flex-wrap items-baseline justify-between gap-md">
+          <h1 className="m-0 font-display text-h1 text-ink">一致率看板</h1>
+          <Link
+            href="/annotations"
+            className="border-b border-rule pb-[1px] text-sm text-ink-2 transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
+          >
+            <span aria-hidden>←</span> 返回工作台
           </Link>
         </div>
-        <p className="text-ink-2 mt-2 max-w-3xl">
+        <p className="m-0 max-w-[68ch] text-lede italic-display text-ink-2">
           基于人工标注 vs 机评分的 4 档（0 / 0.5 / 1 / N/A）一致率。每维度独立计算 accuracy 和 Cohen&apos;s weighted κ。
           样本不足 20 时仅展示 accuracy。
         </p>
-      </div>
+      </header>
 
       {/* 筛选条 */}
       <div className="bg-card border border-[var(--rule)] rounded p-4 mb-6 flex flex-wrap items-end gap-4">

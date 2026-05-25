@@ -1,4 +1,6 @@
 "use client";
+/* Hallmark · component: comparison-radar · theme: EvalKit Studio (custom) */
+
 import {
   Legend,
   PolarAngleAxis,
@@ -9,12 +11,8 @@ import {
   Tooltip,
 } from "recharts";
 import type { DimDelta } from "@/lib/api";
+import { chartColors, tooltipStyle } from "@/lib/chart-colors";
 
-/**
- * 双 series 雷达图：A vs B 同框叠加。
- * - moss（实线）= A
- * - tomato（实线）= B
- */
 export function ComparisonRadar({
   deltas,
   labelA = "Run A",
@@ -30,35 +28,38 @@ export function ComparisonRadar({
     B: d.avg_b ?? 0,
   }));
   return (
-    <div style={{ width: "100%", height: 360 }}>
+    <div style={{ width: "100%", height: 360, minWidth: 0 }}>
       <ResponsiveContainer>
-        <RadarChart data={data} outerRadius="72%">
-          <PolarGrid stroke="rgba(26,24,21,0.10)" />
-          <PolarAngleAxis dataKey="dim" tick={{ fill: "#5C5650", fontSize: 11 }} />
+        <RadarChart data={data} outerRadius="70%">
+          <PolarGrid stroke={chartColors.rule} />
+          <PolarAngleAxis
+            dataKey="dim"
+            tick={{ fill: chartColors.ink2, fontSize: 11, fontFamily: "var(--font-body)" }}
+          />
           <Radar
             name={labelA}
             dataKey="A"
-            stroke="#4A7C59"
-            fill="#4A7C59"
-            fillOpacity={0.18}
-            strokeWidth={2}
+            stroke={chartColors.accent}
+            fill={chartColors.accent}
+            fillOpacity={0.16}
+            strokeWidth={1.8}
           />
           <Radar
             name={labelB}
             dataKey="B"
-            stroke="#D14A3E"
-            fill="#D14A3E"
-            fillOpacity={0.18}
-            strokeWidth={2}
+            stroke={chartColors.warn}
+            fill={chartColors.warn}
+            fillOpacity={0.14}
+            strokeWidth={1.8}
           />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
-          <Tooltip
-            contentStyle={{
+          <Legend
+            wrapperStyle={{
               fontSize: 12,
-              borderRadius: 4,
-              border: "1px solid var(--rule)",
+              fontFamily: "var(--font-body)",
+              color: chartColors.ink2,
             }}
           />
+          <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => v.toFixed(3)} />
         </RadarChart>
       </ResponsiveContainer>
     </div>

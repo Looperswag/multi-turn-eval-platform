@@ -227,6 +227,7 @@ def clone_prompt(prompt_id: int, db: Session = Depends(get_db)):
         weight=src.weight,
         notes=src.notes,
         is_active=False,
+        dimension_strategy=src.dimension_strategy,  # P0-2: 克隆保留策略
         parent_version_id=src.id,
     )
     db.add(obj)

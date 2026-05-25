@@ -32,3 +32,12 @@ pgdata/
 
 # --- Worktrees（Skill 标准目录） ---
 .claude/worktrees/
+
+# --- 本地评测调研产物（截图 / playwright-mcp / hallmark / 探索快照） ---
+.playwright-mcp/
+frontend/.hallmark/
+drawer-snapshot.md
+*.png
+*.jpeg
+*.jpg
+skills-lock.json

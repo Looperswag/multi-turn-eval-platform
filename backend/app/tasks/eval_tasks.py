@@ -1,13 +1,17 @@
 """评测任务编排：execute_eval_run → evaluate_conversation_task × N → finalize_run。
 
 W1 简化：在 execute_eval_run 内顺序遍历 conversation，每条调用一次同步 evaluator。
-W2 会拆分为 group + chord 真正的 fan-out / fan-in（见方案 §4.2）。
+P0-1：把顺序遍历换成 ThreadPoolExecutor，并发度由 EvalRun.concurrency 控制。
+评估器/judge client/PromptRenderer 都是 thread-safe（jinja2 渲染 + httpx 请求），
+每个 worker 线程开独立 SQLAlchemy session 写 case；主线程聚合进度 + 取消检查。
 """
 from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import redis as redis_sync
@@ -50,9 +54,21 @@ def _publish(run_id: int, payload: dict) -> None:
 
 
 def _load_conversation_payload(db, conv: Conversation, bot_version_id: int) -> dict:
-    """把 ORM conversation + bot_rewrite join 成 evaluator 期待的 dict 结构。"""
+    """把 ORM conversation + bot_rewrite join 成 evaluator 期待的 dict 结构。
+
+    A.4：payload 同时携带 BotRewrite 上的"线上 bot 元信息"五个字段，供 v5 prompts 使用。
+    老数据这些字段全 NULL，v4 prompts 不引用所以无影响。
+    """
     rows = (
-        db.query(Turn, BotRewrite.rewritten_query)
+        db.query(
+            Turn,
+            BotRewrite.rewritten_query,
+            BotRewrite.bot_response,
+            BotRewrite.intent_type,
+            BotRewrite.inherited_constraints,
+            BotRewrite.dropped_constraints,
+            BotRewrite.needs_rewrite,
+        )
         .outerjoin(
             BotRewrite,
             (BotRewrite.turn_id == Turn.id) & (BotRewrite.bot_version_id == bot_version_id),
@@ -71,10 +87,105 @@ def _load_conversation_payload(db, conv: Conversation, bot_version_id: int) -> d
                 "user_query": t.user_query,
                 "rewritten_query": rewrite,
                 "timestamp": t.timestamp,
+                "bot_response": bot_resp,
+                "intent_type": intent,
+                "inherited_constraints": inh,
+                "dropped_constraints": drop,
+                "needs_rewrite": needs_rw,
             }
-            for t, rewrite in rows
+            for t, rewrite, bot_resp, intent, inh, drop, needs_rw in rows
         ],
     }
+
+
+def _evaluate_one_conversation(
+    eval_run_id: int,
+    conv_id: int,
+    bot_version_id: int,
+    evaluators: dict,
+    run_weights: dict | None,
+) -> dict:
+    """P0-1 worker：在独立 DB session 中评估一个 conversation，返回结果摘要。
+
+    线程安全保证：
+    - 不复用主线程的 db；走 SessionLocal() 自带 thread-local
+    - evaluators / judge_client / prompt_renderer 都是 stateless 读端，跨线程共享 OK
+    - case + turn_results 在本线程的事务里写完再 commit；如果失败回滚后再尝试写 error
+    """
+    db = SessionLocal()
+    try:
+        conv = db.get(Conversation, conv_id)
+        if not conv:
+            return {
+                "conv_id": conv_id,
+                "status": "error",
+                "error": "conversation not found",
+                "case_id": None,
+            }
+
+        case_id: int | None = None
+        try:
+            payload = _load_conversation_payload(db, conv, bot_version_id)
+            dim_scores: dict[str, float | None] = {}
+            full_results: dict[str, dict] = {}
+            case = EvalCaseResult(eval_run_id=eval_run_id, conversation_id=conv.id)
+            db.add(case)
+            db.flush()
+            case_id = case.id
+
+            for code, evaluator in evaluators.items():
+                result = evaluator.evaluate(payload)
+                score = result.get("score")
+                dim_scores[code] = score
+                setattr(case, f"{code}_score", score)
+                full_results[code] = result
+                for ts in result.get("turn_scores", []) or []:
+                    db.add(
+                        EvalTurnResult(
+                            eval_case_result_id=case.id,
+                            turn_index=ts.get("turn_index", 0),
+                            dimension_code=code,
+                            score=ts.get("score"),
+                            applicable=ts.get("applicable"),
+                            judge_raw_response=ts.get("detail"),
+                        )
+                    )
+
+            weighted, lowest = conversation_weighted_score(dim_scores, weights=run_weights)
+            case.weighted_score = weighted
+            case.lowest_dim_code = lowest
+            case.dim_results_full = full_results
+            db.commit()
+            return {
+                "conv_id": conv_id,
+                "status": "success",
+                "case_id": case_id,
+                "weighted_score": weighted,
+                "dim_scores": dim_scores,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("case eval failed: conv_id=%s", conv_id)
+            db.rollback()
+            # 尝试以新事务写入 error 标记（之前的 case 行因 rollback 已丢失）
+            try:
+                err_case = EvalCaseResult(
+                    eval_run_id=eval_run_id,
+                    conversation_id=conv_id,
+                    error=str(exc)[:1000],
+                )
+                db.add(err_case)
+                db.commit()
+                case_id = err_case.id
+            except Exception:
+                db.rollback()
+            return {
+                "conv_id": conv_id,
+                "status": "error",
+                "case_id": case_id,
+                "error": str(exc),
+            }
+    finally:
+        db.close()
 
 
 @celery_app.task(bind=True, name="execute_eval_run")
@@ -105,6 +216,8 @@ def execute_eval_run(self, eval_run_id: int) -> dict:
         # run.judge_prompt_version_ids 形如 {"dim1": 1, "dim2": 2, ...}
         prompt_version_ids = run.judge_prompt_version_ids or {}
         templates: dict[str, str] = {}
+        # P0-2：维度策略字段从 DB 显式带出，交给 PromptRenderer/Dispatcher 路由用
+        strategies: dict[str, str] = {}
         for code in run.dimensions_selected:
             pv_id = prompt_version_ids.get(code)
             if pv_id is None:
@@ -112,10 +225,11 @@ def execute_eval_run(self, eval_run_id: int) -> dict:
             pv = db.get(JudgePromptVersion, pv_id)
             if pv and pv.prompt_template:
                 templates[code] = pv.prompt_template
+                strategies[code] = pv.dimension_strategy or "per_turn"
         # P0: PromptRenderer 构造时编译所有模板（eager），语法错误会抛 TemplateSyntaxError。
         # 必须把 run 标 failed 后再抛，否则会卡在 running。
         try:
-            renderer = PromptRenderer(templates)
+            renderer = PromptRenderer(templates, strategies=strategies)
         except Exception as exc:  # noqa: BLE001
             logger.exception("PromptRenderer init failed for run %s", eval_run_id)
             run.status = "failed"
@@ -187,104 +301,103 @@ def execute_eval_run(self, eval_run_id: int) -> dict:
         run_weights = run.dimension_weights or None
         start_time = time.monotonic()
 
-        for conv in conversations:
-            # 取消检查
+        # P0-1：并行评估 conversation。max_workers 取 EvalRun.concurrency
+        # (默认 5)，但不超过待评估数量。共享 evaluators / judge_client / renderer
+        # 是 stateless 的，跨线程安全。
+        max_workers = min(max(int(getattr(run, "concurrency", 5) or 5), 1), len(conversations) or 1)
+        cancel_event = threading.Event()
+        publish_lock = threading.Lock()
+        bot_version_id = run.bot_version_id  # snapshot 避免在线程里访问 ORM 属性
+
+        def _check_cancelled() -> bool:
             db.refresh(run)
-            if run.status == "cancelled":
-                _publish(eval_run_id, {"event": "run_cancelled"})
-                return {"status": "cancelled", "completed": completed}
+            return run.status == "cancelled"
 
-            case: EvalCaseResult | None = None
-            case_dim_scores: dict[str, float | None] = {}
-            case_succeeded = False
-            case_error: str | None = None
-            try:
-                payload = _load_conversation_payload(db, conv, run.bot_version_id)
-                dim_scores: dict[str, float | None] = {}
-                full_results: dict[str, dict] = {}
-                case = EvalCaseResult(eval_run_id=eval_run_id, conversation_id=conv.id)
-                db.add(case)
-                db.flush()
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_conv = {
+                pool.submit(
+                    _evaluate_one_conversation,
+                    eval_run_id,
+                    conv.id,
+                    bot_version_id,
+                    evaluators,
+                    run_weights,
+                ): conv
+                for conv in conversations
+            }
 
-                for code, evaluator in evaluators.items():
-                    result = evaluator.evaluate(payload)
-                    score = result.get("score")
-                    dim_scores[code] = score
-                    setattr(case, f"{code}_score", score)
-                    full_results[code] = result
+            for fut in as_completed(future_to_conv):
+                conv = future_to_conv[fut]
+                # 取消优先：若已取消则尽快收尾（已提交的 future 仍跑完，但不再发布）
+                if cancel_event.is_set() or _check_cancelled():
+                    cancel_event.set()
+                    continue
 
-                    # 写 turn 级（若维度提供 turn_scores）
-                    for ts in result.get("turn_scores", []) or []:
-                        db.add(
-                            EvalTurnResult(
-                                eval_case_result_id=case.id,
-                                turn_index=ts.get("turn_index", 0),
-                                dimension_code=code,
-                                score=ts.get("score"),
-                                applicable=ts.get("applicable"),
-                                judge_raw_response=ts.get("detail"),
-                            )
+                try:
+                    result = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("future error for conv_id=%s", conv.id)
+                    result = {
+                        "conv_id": conv.id,
+                        "status": "error",
+                        "case_id": None,
+                        "error": str(exc),
+                    }
+
+                with publish_lock:
+                    if result["status"] == "success":
+                        completed += 1
+                        weighted_scores.append(result["weighted_score"])
+                        run.completed = completed
+                        run.failed = failed
+                        db.commit()
+
+                        elapsed = time.monotonic() - start_time
+                        processed = completed + failed
+                        avg = elapsed / max(processed, 1)
+                        eta_seconds = round(avg * max(run.total - processed, 0))
+
+                        _publish(
+                            eval_run_id,
+                            {
+                                "event": "case_completed",
+                                "completed": completed,
+                                "failed": failed,
+                                "total": run.total,
+                                "eta_seconds": eta_seconds,
+                                "conversation_id": conv.id,
+                                "case_id": result.get("case_id"),
+                                "dim_scores": result.get("dim_scores"),
+                            },
+                        )
+                    else:
+                        failed += 1
+                        run.completed = completed
+                        run.failed = failed
+                        db.commit()
+
+                        elapsed = time.monotonic() - start_time
+                        processed = completed + failed
+                        avg = elapsed / max(processed, 1)
+                        eta_seconds = round(avg * max(run.total - processed, 0))
+
+                        _publish(
+                            eval_run_id,
+                            {
+                                "event": "case_failed",
+                                "completed": completed,
+                                "failed": failed,
+                                "total": run.total,
+                                "eta_seconds": eta_seconds,
+                                "conversation_id": conv.id,
+                                "case_id": result.get("case_id"),
+                                "error_message": result.get("error"),
+                            },
                         )
 
-                weighted, lowest = conversation_weighted_score(dim_scores, weights=run_weights)
-                case.weighted_score = weighted
-                case.lowest_dim_code = lowest
-                case.dim_results_full = full_results
-
-                weighted_scores.append(weighted)
-                completed += 1
-                case_succeeded = True
-                case_dim_scores = dim_scores
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("case eval failed: conv_id=%s", conv.id)
-                failed += 1
-                case_error = str(exc)
-                # case 已加入 session，标记 error
-                if case is not None:
-                    case.error = case_error
-            finally:
-                run.completed = completed
-                run.failed = failed
-                db.commit()
-
-                # ETA 计算：基于平均耗时 × 剩余条数
-                elapsed = time.monotonic() - start_time
-                processed = completed + failed
-                if processed > 0:
-                    avg_per_case = elapsed / processed
-                    remaining = max(run.total - processed, 0)
-                    eta_seconds: int | None = round(avg_per_case * remaining)
-                else:
-                    eta_seconds = None
-
-                if case_succeeded:
-                    _publish(
-                        eval_run_id,
-                        {
-                            "event": "case_completed",
-                            "completed": completed,
-                            "failed": failed,
-                            "total": run.total,
-                            "eta_seconds": eta_seconds,
-                            "conversation_id": conv.id,
-                            "case_id": case.id if case is not None else None,
-                            "dim_scores": case_dim_scores,
-                        },
-                    )
-                else:
-                    _publish(
-                        eval_run_id,
-                        {
-                            "event": "case_failed",
-                            "completed": completed,
-                            "failed": failed,
-                            "total": run.total,
-                            "eta_seconds": eta_seconds,
-                            "conversation_id": conv.id,
-                            "case_id": case.id if case is not None else None,
-                            "error_message": case_error,
-                        },
-                    )
+        if cancel_event.is_set():
+            _publish(eval_run_id, {"event": "run_cancelled"})
+            return {"status": "cancelled", "completed": completed}
 
         # finalize
         run.weighted_score = run_overall_score(weighted_scores)

@@ -103,23 +103,29 @@ export default function BadcasesPage({ params }: { params: { id: string } }) {
   const total = data?.total ?? 0;
 
   return (
-    <div className="max-w-[1800px]">
-      <div className="mb-2 text-ink-3 text-xs">
-        <Link href="/eval-runs" className="text-ink-2 hover:text-ink">
+    <div className="mx-auto flex max-w-[1800px] min-w-0 flex-col gap-xl pb-4xl">
+      <nav aria-label="Breadcrumb" className="text-caption uppercase tracking-[0.08em] text-ink-3">
+        <Link href="/eval-runs" className="transition-colors duration-fast ease-out hover:text-ink">
           评测任务
-        </Link>{" "}
-        /{" "}
-        <Link href={`/eval-runs/${runId}`} className="text-ink-2 hover:text-ink">
+        </Link>
+        <span aria-hidden className="px-xs text-ink-4">/</span>
+        <Link href={`/eval-runs/${runId}`} className="font-mono normal-case tracking-normal text-ink-3 transition-colors duration-fast ease-out hover:text-ink">
           #{runId}
-        </Link>{" "}
-        / <span className="ml-1">Badcase 钻取</span>
-      </div>
-      <div className="flex items-baseline justify-between mb-6">
-        <h1 className="font-display text-4xl font-medium tracking-tight">Badcase 钻取</h1>
-        <div className="text-sm text-ink-3">
+        </Link>
+        <span aria-hidden className="px-xs text-ink-4">/</span>
+        <span className="text-ink-2">Badcase 钻取</span>
+      </nav>
+      <header className="flex flex-wrap items-baseline justify-between gap-md">
+        <div className="flex min-w-0 flex-col gap-2xs">
+          <h1 className="m-0 font-display text-h1 text-ink">Badcase 钻取</h1>
+          <p className="m-0 max-w-[68ch] text-sm italic-display text-ink-3">
+            按维度过滤、按标签筛选、按状态收敛 — 点行展开 Drawer 看完整 judge raw。
+          </p>
+        </div>
+        <div className="font-mono text-xs tabular-nums text-ink-3">
           {loading ? "加载中…" : `共 ${total} 条`}
         </div>
-      </div>
+      </header>
 
       {error && (
         <div className="border border-tomato/30 bg-tomato/5 rounded p-3 text-sm text-tomato mb-4">

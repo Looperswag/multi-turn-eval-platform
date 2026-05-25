@@ -15,12 +15,18 @@ from jinja2 import Environment, StrictUndefined
 
 
 class PromptRenderer:
-    def __init__(self, templates: dict[str, str]):
+    def __init__(
+        self,
+        templates: dict[str, str],
+        strategies: dict[str, str] | None = None,
+    ):
         env = Environment(
             undefined=StrictUndefined,
             autoescape=False,
             keep_trailing_newline=True,
         )
+        self._sources: dict[str, str] = dict(templates)
+        self._strategies: dict[str, str] = dict(strategies or {})
         self.envs = {code: env.from_string(tmpl) for code, tmpl in templates.items()}
 
     def render(self, dim_code: str, **ctx) -> list[dict[str, str]]:
@@ -28,3 +34,10 @@ class PromptRenderer:
             raise KeyError(f"PromptRenderer: no template for dimension '{dim_code}'")
         rendered = self.envs[dim_code].render(**ctx)
         return [{"role": "user", "content": rendered}]
+
+    def template_source(self, dim_code: str) -> str | None:
+        return self._sources.get(dim_code)
+
+    def strategy(self, dim_code: str) -> str:
+        """返回该维度的评估调用策略；缺失或未配置时回落到 per_turn。"""
+        return self._strategies.get(dim_code, "per_turn")

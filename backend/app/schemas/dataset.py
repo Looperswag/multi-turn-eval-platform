@@ -81,6 +81,11 @@ class ParseSessionOut(BaseModel):
     suggested_mapping: FieldMappingPayload
     format: str
     total_rows: int
+    # A.4 线上格式：检测到 meta_conversation_id + historyquery + llm_resp 三列同时存在时为 True；
+    # 前端在 True 时可跳过 mapping 步骤，直接进入预览/确认。
+    is_online_format: bool = False
+    online_conversation_count: int = 0
+    online_turn_count: int = 0
 
 
 class PreviewPayload(BaseModel):

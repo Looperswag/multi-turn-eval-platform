@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import ForeignKey, String, Text, DateTime, UniqueConstraint, JSON
+from sqlalchemy import Boolean, ForeignKey, String, Text, DateTime, UniqueConstraint, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -28,3 +28,10 @@ class BotRewrite(Base):
     )
     rewritten_query: Mapped[str | None] = mapped_column(Text, nullable=True)  # 首轮可为 None
     raw_response_meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # 线上格式扩展（A.4）：bot 自报的元信息，用于 v5 prompt 做更精准评测
+    bot_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    intent_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    inherited_constraints: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    dropped_constraints: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    needs_rewrite: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

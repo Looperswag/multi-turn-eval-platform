@@ -10,6 +10,7 @@ class JudgePromptVersionOut(BaseModel):
     weight: float
     notes: str | None
     is_active: bool
+    dimension_strategy: str = "per_turn"
     parent_version_id: int | None
     created_at: datetime
     updated_at: datetime
@@ -27,6 +28,7 @@ class JudgePromptVersionCreate(BaseModel):
     prompt_template: str
     weight: float = 0.0
     notes: str | None = None
+    dimension_strategy: str = "per_turn"
 
 
 class JudgePromptVersionUpdate(BaseModel):
@@ -34,6 +36,7 @@ class JudgePromptVersionUpdate(BaseModel):
     prompt_template: str | None = None
     weight: float | None = None
     notes: str | None = None
+    dimension_strategy: str | None = None
 
 
 class JudgePromptPerformanceItem(BaseModel):

@@ -299,7 +299,12 @@ def _attach_rewrites_for_dataset(
     dataset_id: int,
     convs: list[dict],
 ) -> int:
-    """复用 bots.attach_rewrites 的 UPSERT 模式：把 convs 里的 rewritten_query 写入 bot_rewrite。"""
+    """复用 bots.attach_rewrites 的 UPSERT 模式：把 convs 里的 rewritten_query 写入 bot_rewrite。
+
+    A.4：若 turn dict 含线上扩展字段（bot_response / intent_type /
+    inherited_constraints / dropped_constraints / needs_rewrite），一并写入。
+    没有这些字段（非线上格式）就只更新 rewritten_query 列。
+    """
     rows = (
         db.query(Conversation.conversation_id_src, Turn.turn_index, Turn.id)
         .join(Turn, Turn.conversation_id == Conversation.id)
@@ -309,24 +314,43 @@ def _attach_rewrites_for_dataset(
     turn_lookup = {(r[0], r[1]): r[2] for r in rows}
 
     rows_to_upsert = []
+    has_online_meta = False  # 决定 UPSERT 的 set_ 是否要覆盖元字段
     for conv in convs:
         for t in conv.get("turns", []):
             rw = t.get("rewritten_query")
-            if not rw:
+            online_keys = (
+                "bot_response", "intent_type",
+                "inherited_constraints", "dropped_constraints", "needs_rewrite",
+            )
+            has_any_meta = any(t.get(k) is not None for k in online_keys)
+            # 只有 rw 与 meta 全为空时才跳过（线上 phantom 轮 rw 为空但可能有 bot_response）
+            if not rw and not has_any_meta:
                 continue
             turn_id = turn_lookup.get((conv["conversation_id"], t["turn_index"]))
             if turn_id is None:
                 continue
-            rows_to_upsert.append({
+            row = {
                 "turn_id": turn_id,
                 "bot_version_id": bot_version_id,
                 "rewritten_query": rw,
-            })
+            }
+            for k in online_keys:
+                if k in t:
+                    row[k] = t[k]
+                    has_online_meta = True
+            rows_to_upsert.append(row)
     if rows_to_upsert:
         stmt = pg_insert(BotRewrite.__table__).values(rows_to_upsert)
+        set_ = {"rewritten_query": stmt.excluded.rewritten_query}
+        if has_online_meta:
+            for k in (
+                "bot_response", "intent_type",
+                "inherited_constraints", "dropped_constraints", "needs_rewrite",
+            ):
+                set_[k] = getattr(stmt.excluded, k)
         stmt = stmt.on_conflict_do_update(
             index_elements=["turn_id", "bot_version_id"],
-            set_={"rewritten_query": stmt.excluded.rewritten_query},
+            set_=set_,
         )
         db.execute(stmt)
     return len(rows_to_upsert)
@@ -364,6 +388,27 @@ async def parse_upload(
 
     suggested = dataset_parser.infer_field_mapping(parsed.columns)
 
+    # A.4 — 自动识别"线上格式 Excel"：含 meta_conversation_id + historyquery + llm_resp 三列
+    # 时直接走 parse_online_excel，输出结构化 conv list；前端跳过 mapping/validation 步骤
+    online_convs: list[dict] | None = None
+    is_online = dataset_parser.is_online_format(parsed.columns) and parsed.format == "excel"
+    if is_online:
+        try:
+            online_convs = dataset_parser.parse_online_excel(file_bytes)
+        except Exception:  # noqa: BLE001
+            # 解析失败 → 回退到普通向导，让用户手动映射
+            online_convs = None
+            is_online = False
+
+    # 「线上简单格式」次优先级（只在不是线上完整格式时才检查）
+    if not is_online and parsed.format == "excel" and dataset_parser.is_online_simple_format(parsed.columns):
+        try:
+            online_convs = dataset_parser.parse_online_simple_excel(file_bytes)
+            is_online = True
+        except Exception:  # noqa: BLE001
+            online_convs = None
+            is_online = False
+
     session_id = uuid.uuid4().hex
     key = f"{_PARSE_KEY_PREFIX}{session_id}"
     payload = {
@@ -372,8 +417,13 @@ async def parse_upload(
         "format": parsed.format,
         "filename": file.filename,
     }
+    if online_convs is not None:
+        payload["online_convs"] = online_convs
     _redis.set(key, json.dumps(payload, ensure_ascii=False, default=str), ex=_PARSE_TTL_SECONDS)
 
+    online_turn_count = (
+        sum(len(c.get("turns") or []) for c in online_convs) if online_convs else 0
+    )
     return ParseSessionOut(
         parse_session_id=session_id,
         columns=parsed.columns,
@@ -381,6 +431,9 @@ async def parse_upload(
         suggested_mapping=FieldMappingPayload(**asdict(suggested)),
         format=parsed.format,
         total_rows=len(parsed.rows),
+        is_online_format=is_online,
+        online_conversation_count=len(online_convs) if online_convs else 0,
+        online_turn_count=online_turn_count,
     )
 
 
@@ -393,8 +446,26 @@ def _load_session(parse_session_id: str) -> dict:
 
 @router.post("/upload/preview", response_model=PreviewResult)
 def preview_upload(payload: PreviewPayload):
-    """Step 2/3：用户调整 mapping 后，重新校验并返回前 5 条预览。"""
+    """Step 2/3：用户调整 mapping 后，重新校验并返回前 5 条预览。
+
+    A.4 线上格式短路：session 中带 online_convs 时直接返回，无需校验/映射。
+    """
     session = _load_session(payload.parse_session_id)
+
+    # 线上格式：直接用已解析的 conv list
+    if session.get("online_convs"):
+        online_convs: list[dict] = session["online_convs"]
+        total_turns = sum(len(c.get("turns") or []) for c in online_convs)
+        return PreviewResult(
+            validation_report=ValidationReportOut(
+                issues=[],
+                total_conversations=len(online_convs),
+                total_turns=total_turns,
+                is_passable=True,
+            ),
+            preview_conversations=online_convs[:5],
+        )
+
     rows: list[dict] = session["rows"]
     mapping = _mapping_from_payload(payload.mapping)
 
@@ -420,30 +491,62 @@ def preview_upload(payload: PreviewPayload):
 
 @router.post("/upload/confirm", response_model=DatasetOut)
 def confirm_upload(payload: ConfirmPayload, db: Session = Depends(get_db)):
-    """Step 4：确认入库。可选 attach 到 bot_version_id 同时写 rewrite。"""
+    """Step 4：确认入库。可选 attach 到 bot_version_id 同时写 rewrite。
+
+    A.4 线上格式短路：session 含 online_convs 时直接用，不走 mapping/validation/transform。
+    """
     session = _load_session(payload.parse_session_id)
-    rows: list[dict] = session["rows"]
-    mapping = _mapping_from_payload(payload.mapping)
 
-    report = dataset_parser.validate(rows, mapping)
-    if not report.is_passable:
-        raise HTTPException(
-            422,
-            detail={
-                "message": "校验未通过，无法入库",
-                "issues": [asdict(i) for i in report.issues if i.severity == "error"],
-            },
-        )
+    if session.get("online_convs"):
+        convs: list[dict] = session["online_convs"]
+        if not convs:
+            raise HTTPException(422, "线上格式：无可入库的 conversation")
+    else:
+        rows: list[dict] = session["rows"]
+        mapping = _mapping_from_payload(payload.mapping)
 
-    convs = dataset_parser.transform(rows, mapping)
-    if not convs:
-        raise HTTPException(422, "无可入库的 conversation")
+        report = dataset_parser.validate(rows, mapping)
+        if not report.is_passable:
+            raise HTTPException(
+                422,
+                detail={
+                    "message": "校验未通过，无法入库",
+                    "issues": [asdict(i) for i in report.issues if i.severity == "error"],
+                },
+            )
+
+        convs = dataset_parser.transform(rows, mapping)
+        if not convs:
+            raise HTTPException(422, "无可入库的 conversation")
 
     # 若指定 bot version，先校验存在
     bot_version_id = payload.attach_bot_version_id
     if bot_version_id is not None:
         if not db.get(BotVersion, bot_version_id):
             raise HTTPException(404, "bot_version not found")
+
+    # A.4 线上格式 + 未指定 bot_version → 自动创建一条 "online-prod-{dataset_name}"
+    # 让线上数据能直接落地，不需要前端先建 bot
+    if session.get("online_convs") and bot_version_id is None:
+        auto_tag = f"online-{payload.dataset_name}".replace(" ", "_")[:60]
+        existing = (
+            db.query(BotVersion)
+            .filter(BotVersion.version_tag == auto_tag)
+            .first()
+        )
+        if existing:
+            bot_version_id = existing.id
+        else:
+            auto_bot = BotVersion(
+                name=f"线上 bot · {payload.dataset_name}"[:255],
+                version_tag=auto_tag,
+                description="A.4 自动创建：用于承载线上 Excel 中的 rewrite + 元信息",
+                bot_provider="online_capture",
+                base_model="unknown",
+            )
+            db.add(auto_bot)
+            db.flush()
+            bot_version_id = auto_bot.id
 
     dataset = Dataset(
         name=payload.dataset_name,

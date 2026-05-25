@@ -104,7 +104,7 @@ def build_dim2_prompt(all_turns):
   "constraint_retention": [
     {{"constraint": "约束值", "should_appear_in_turns": [2,3,4], "actually_appeared_in": [2,3], "recall": 0.67}}
   ],
-  "overall_score": 0.0,
+  "overall_score": <0.0~1.0 之间的实数，代表所有约束召回率均值>,
   "explanation": "100字内说明哪些约束丢失"
 }}"""
 
@@ -217,7 +217,7 @@ def build_dim4_prompt(history_turns, current_turn):
   "anaphora_type": "ordinal/single/backtrack/none",
   "expected_referent": "应当指向的商品/对象",
   "actual_referent_in_rewrite": "改写中实际包含的指向",
-  "score": 0,
+  "score": <0 / 0.5 / 1 之一，按 Step 4 评分规则填写>,
   "explanation": "100字内说明"
 }}"""
 
@@ -273,9 +273,9 @@ def build_dim5_prompt(history_turns, current_turn):
 {{
   "applicable": true 或 false,
   "expected_theme_query": "应当复述的历史主题 query",
-  "rewrite_length": 0,
+  "rewrite_length": <改写后 query 的字符数>,
   "hallucinated_words": [],
-  "score": 0,
+  "score": <0 / 0.5 / 1 之一，按 Step 4 评分规则填写>,
   "explanation": "100字内说明"
 }}"""
 
@@ -336,7 +336,7 @@ def build_dim6_prompt(all_turns):
       "evidence": "改写片段"
     }}
   ],
-  "score": 0,
+  "score": <0 / 0.5 / 1 之一，按 Step 3 评分规则填写>,
   "explanation": "100字内总结"
 }}"""
 
