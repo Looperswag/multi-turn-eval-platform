@@ -244,13 +244,22 @@ export default function AnnotationWorkbenchPage() {
             ))}
           </div>
         </Field>
-        <Field label="Annotator 名">
+        <Field label="Annotator 名 *">
           <input
             value={annotator}
             onChange={(e) => setAnnotator(e.target.value)}
-            placeholder="e.g. alice"
-            className="w-full px-3 py-2 border border-[var(--rule-strong)] rounded bg-card-2 text-sm"
+            placeholder="必填 — 例如 alice / bob"
+            className={`w-full px-3 py-2 border rounded bg-card-2 text-sm ${
+              annotator.trim()
+                ? "border-[var(--rule-strong)]"
+                : "border-tomato"
+            }`}
           />
+          {!annotator.trim() && (
+            <span className="block text-xs text-tomato mt-1">
+              未填写 — 评分表单将被禁用直到填写
+            </span>
+          )}
         </Field>
         <label className="flex items-center gap-2 text-sm pb-2">
           <input

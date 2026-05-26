@@ -34,6 +34,7 @@ export default function NewEvalRunPage() {
   const [prompts, setPrompts] = useState<PromptVersion[]>([]);
   const [regressionSets, setRegressionSets] = useState<RegressionSetOut[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [submitAttempted, setSubmitAttempted] = useState(false);  // M2.2: 提交一次后才高亮错误，避免初次打开吓人
   const [form, setForm] = useState({
     name: "",
     description: "",
@@ -89,11 +90,14 @@ export default function NewEvalRunPage() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    // 前端兜底：已选维度的权重总和必须 > 0
+    setSubmitAttempted(true);
+    // M2.2: 前端 inline 校验。任一项不通过不 alert，让红框 + 行内文案自己说话。
+    if (!form.name.trim()) {
+      return;  // 名称红框已经会显示
+    }
     const selectedSum = form.dimensions.reduce((s, d) => s + (form.weights[d] ?? 0), 0);
     if (selectedSum <= 0) {
-      alert("已选维度的权重总和必须 > 0；请至少给一个维度配权重，或恢复默认。");
-      return;
+      return;  // 权重 warning 已经会显示
     }
     setSubmitting(true);
     try {
@@ -148,12 +152,18 @@ export default function NewEvalRunPage() {
       <form onSubmit={submit} className="flex flex-col gap-xl border-t border-rule pt-lg">
         <Field label="任务名称">
           <input
-            required
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
-            className="w-full px-3 py-2 border border-[var(--rule-strong)] rounded bg-card-2"
+            className={`w-full px-3 py-2 border rounded bg-card-2 ${
+              submitAttempted && !form.name.trim()
+                ? "border-tomato"
+                : "border-[var(--rule-strong)]"
+            }`}
             placeholder="e.g. v4 baseline 2026-05"
           />
+          {submitAttempted && !form.name.trim() && (
+            <span className="block text-xs text-tomato mt-1">请填写任务名称</span>
+          )}
         </Field>
 
         <Field label="描述（可选）">
@@ -368,35 +378,38 @@ function WeightSummary({
   const sum = dimensions.reduce((s, d) => s + (weights[d] ?? 0), 0);
   const okSum = sum > 0;
   const isNorm = Math.abs(sum - 1) < 1e-3;
+  // M2.2: 三档视觉态——总和=0 红色阻断 / ≠1 amber warning / =1 moss 通过
+  const bgClass = !okSum
+    ? "bg-tomato/5 border border-tomato/40"
+    : !isNorm
+      ? "bg-amber/10 border border-amber/40"
+      : "bg-[var(--card-2)]";
+  const sumColor = !okSum ? "text-tomato" : !isNorm ? "text-amber" : "text-moss";
   return (
-    <div className="px-4 py-2.5 flex items-center gap-3 bg-[var(--card-2)] text-xs">
+    <div className={`px-4 py-2.5 flex items-center gap-3 rounded text-xs ${bgClass}`}>
       <span className="uppercase-label text-ink-3">已选维度权重总和</span>
-      <span
-        className={`font-mono-feat tabular-nums ${
-          okSum ? (isNorm ? "text-moss" : "text-ink") : "text-tomato"
-        }`}
-      >
+      <span className={`font-mono-feat tabular-nums ${sumColor}`}>
         {sum.toFixed(4).replace(/0+$/, "").replace(/\.$/, "") || "0"}
       </span>
-      {!okSum && <span className="text-tomato">⚠ 总和必须 &gt; 0</span>}
+      {!okSum && <span className="text-tomato">⚠ 总和必须 &gt; 0，否则无法提交</span>}
       {okSum && !isNorm && (
-        <span className="text-ink-3">
-          相对权重不需要严格 = 1，scoring 会按总和归一化
+        <span className="text-amber">
+          ⚠ 总和 ≠ 1；scoring 会自动归一化，建议手动归一以保证可读性
         </span>
       )}
       <button
         type="button"
         onClick={onNormalize}
         disabled={!okSum}
-        className="ml-auto text-ink-blue hover:underline disabled:opacity-40 disabled:no-underline"
+        className={`ml-auto rounded px-2 py-0.5 transition-colors ${
+          okSum && !isNorm
+            ? "bg-moss text-white hover:opacity-90"
+            : "text-ink-blue hover:underline disabled:opacity-40 disabled:no-underline"
+        }`}
       >
         归一化到 1
       </button>
-      <button
-        type="button"
-        onClick={onReset}
-        className="text-ink-3 hover:text-ink"
-      >
+      <button type="button" onClick={onReset} className="text-ink-3 hover:text-ink">
         恢复默认
       </button>
     </div>
