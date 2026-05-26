@@ -1,26 +1,11 @@
-import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
-from jinja2 import Environment, StrictUndefined, TemplateSyntaxError, meta
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.models import EvalCaseResult, EvalRun, JudgeModel, JudgePromptVersion
-
-
-def _validate_jinja2_template(tmpl: str) -> None:
-    """保存 prompt 前校验 jinja2 语法。语法错则抛 400 + 错误位置。"""
-    if not tmpl:
-        return
-    try:
-        Environment(undefined=StrictUndefined, autoescape=False).parse(tmpl)
-    except TemplateSyntaxError as exc:
-        raise HTTPException(
-            400,
-            f"jinja2 语法错误 (line {exc.lineno}): {exc.message}",
-        ) from exc
 from app.schemas.judge import (
     JudgeModelCreate,
     JudgeModelOut,
@@ -34,97 +19,26 @@ from app.schemas.judge import (
     JudgePromptVersionUpdate,
 )
 from app.services.eval_engine.judge_client import build_judge_client
+from app.services.prompt_lifecycle import (
+    TemplateValidationError,
+    build_prompt_usage_map,
+    count_prompt_in_use,
+    next_version_tag,
+    render_preview,
+    runs_referencing_prompt,
+    validate_jinja2_template,
+)
+
 
 router = APIRouter(prefix="/api/judge-config", tags=["judge-config"])
 
 
-def _runs_referencing_prompt(db: Session, prompt: JudgePromptVersion) -> list[EvalRun]:
-    """查找所有 judge_prompt_version_ids[dimension_code] == prompt.id 的 run。
-
-    简化做法：拉所有 run 在 Python 端判断，W1.5 数据量小可接受。
-    """
-    runs = db.query(EvalRun).all()
-    out: list[EvalRun] = []
-    for r in runs:
-        ids = r.judge_prompt_version_ids or {}
-        if not isinstance(ids, dict):
-            continue
-        # 值可能是 int 或 str 类型，统一比较
-        try:
-            v = ids.get(prompt.dimension_code)
-        except AttributeError:
-            continue
-        if v is None:
-            continue
-        try:
-            if int(v) == prompt.id:
-                out.append(r)
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
-def _count_prompt_in_use(db: Session, prompt: JudgePromptVersion) -> int:
-    return len(_runs_referencing_prompt(db, prompt))
-
-
-def _next_version_tag(db: Session, dimension_code: str, source_tag: str) -> str:
-    """根据源 version_tag 推断下一个未占用的 tag。
-
-    源是 "v4" → "v5"；源是 "v5" → "v6"。
-    源是 "v4-test" / 其它格式 → 取当前 dim 下最大 v<n> 的下一个；找不到则 "源_clone_N"。
-    """
-    existing = {
-        v.version_tag
-        for v in db.query(JudgePromptVersion).filter(
-            JudgePromptVersion.dimension_code == dimension_code
-        )
-    }
-
-    # case1: 形如 "v<n>"，直接递增
-    m = re.fullmatch(r"v(\d+)", source_tag)
-    if m:
-        n = int(m.group(1)) + 1
-        while f"v{n}" in existing:
-            n += 1
-        return f"v{n}"
-
-    # case2: 找当前 dim 下最大的 v<n>
-    nums: list[int] = []
-    for tag in existing:
-        m2 = re.fullmatch(r"v(\d+)", tag)
-        if m2:
-            nums.append(int(m2.group(1)))
-    if nums:
-        n = max(nums) + 1
-        while f"v{n}" in existing:
-            n += 1
-        return f"v{n}"
-
-    # case3: fallback —— 在 source_tag 加 _clone_N
-    n = 1
-    while f"{source_tag}_clone_{n}" in existing:
-        n += 1
-    return f"{source_tag}_clone_{n}"
-
-
-def _build_prompt_usage_map(db: Session) -> dict[int, int]:
-    """一次扫所有 EvalRun.judge_prompt_version_ids，得到 {prompt_version_id: in_use_count}。
-
-    比逐 prompt 调 `_count_prompt_in_use` (O(P×R)) 高效一点，列表渲染时只调一次。
-    """
-    out: dict[int, int] = {}
-    for run in db.query(EvalRun.judge_prompt_version_ids).all():
-        ids = run[0] or {}
-        if not isinstance(ids, dict):
-            continue
-        for v in ids.values():
-            try:
-                pv_id = int(v)
-            except (TypeError, ValueError):
-                continue
-            out[pv_id] = out.get(pv_id, 0) + 1
-    return out
+def _validate_template_or_400(tmpl: str) -> None:
+    """薄封装：把 service 层的 TemplateValidationError 转 HTTP 400。"""
+    try:
+        validate_jinja2_template(tmpl)
+    except TemplateValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/prompts", response_model=list[JudgePromptVersionOut])
@@ -135,7 +49,7 @@ def list_prompts(dimension_code: str | None = None, db: Session = Depends(get_db
     prompts = q.order_by(
         JudgePromptVersion.dimension_code, JudgePromptVersion.created_at.desc()
     ).all()
-    usage = _build_prompt_usage_map(db)
+    usage = build_prompt_usage_map(db)
     out: list[JudgePromptVersionOut] = []
     for p in prompts:
         item = JudgePromptVersionOut.model_validate(p)
@@ -150,13 +64,13 @@ def get_prompt(prompt_id: int, db: Session = Depends(get_db)):
     if not obj:
         raise HTTPException(404, "prompt not found")
     detail = JudgePromptVersionDetail.model_validate(obj)
-    detail.in_use_count = _count_prompt_in_use(db, obj)
+    detail.in_use_count = count_prompt_in_use(db, obj)
     return detail
 
 
 @router.post("/prompts", response_model=JudgePromptVersionOut)
 def create_prompt(payload: JudgePromptVersionCreate, db: Session = Depends(get_db)):
-    _validate_jinja2_template(payload.prompt_template)
+    _validate_template_or_400(payload.prompt_template)
     obj = JudgePromptVersion(**payload.model_dump())
     db.add(obj)
     try:
@@ -181,92 +95,15 @@ class PromptPreviewOut(BaseModel):
     error: str | None = None
 
 
-# Sample contexts used by /prompts/preview — kept inline so the renderer-side
-# variable set stays the single source of truth for what a template can reference.
-_SAMPLE_TURN = {
-    "turn_index": 2,
-    "user_query": "再推荐个 8000 以内的设计笔记本",
-    "rewritten_query": "8000 以内设计用笔记本电脑",
-}
-_SAMPLE_TURNS_TEXT = (
-    "  第1轮 用户query: 想买个设计师用的笔记本，预算 5000\n"
-    "  第1轮 改写query: 5000 以内 设计师笔记本电脑\n\n"
-    "  第2轮 用户query: 再推荐个 8000 以内的设计笔记本\n"
-    "  第2轮 改写query: 8000 以内设计用笔记本电脑\n\n"
-    "  第3轮 用户query: 再来个鼠标\n"
-    "  第3轮 改写query: 鼠标\n\n"
-)
-_SAMPLE_TURNS_TEXT_WITH_META = _SAMPLE_TURNS_TEXT + (
-    "（meta: total_turns=3, has_brand_pin=false）\n"
-)
-_SAMPLE_HISTORY_TEXT = (
-    "  第1轮 用户query: 想买个设计师用的笔记本，预算 5000\n"
-    "  第1轮 改写query: 5000 以内 设计师笔记本电脑\n\n"
-)
-
-
-def _build_preview_context() -> dict:
-    """Sample values covering every jinja variable used across known templates.
-
-    StrictUndefined ensures we still surface unknown variable names as errors —
-    callers see exactly which placeholder is missing from the sample set.
-    """
-    return {
-        "history_text": _SAMPLE_HISTORY_TEXT,
-        "current_user_query": _SAMPLE_TURN["user_query"],
-        "current_rewritten_query": _SAMPLE_TURN["rewritten_query"],
-        "turns_text": _SAMPLE_TURNS_TEXT,
-        "turns_text_with_meta": _SAMPLE_TURNS_TEXT_WITH_META,
-        "meta_id": "demo_meta_001",
-        "total_turns": 3,
-        "turn_index": _SAMPLE_TURN["turn_index"],
-        "user_query": _SAMPLE_TURN["user_query"],
-        "rewritten_query": _SAMPLE_TURN["rewritten_query"],
-    }
-
-
 @router.post("/prompts/preview", response_model=PromptPreviewOut)
 def preview_prompt(payload: PromptPreviewIn):
-    env = Environment(undefined=StrictUndefined, autoescape=False, keep_trailing_newline=True)
-    ctx = _build_preview_context()
-    try:
-        ast = env.parse(payload.template)
-    except TemplateSyntaxError as exc:
-        return PromptPreviewOut(
-            rendered="",
-            vars_detected=[],
-            vars_used=[],
-            error=f"jinja2 语法错误 (line {exc.lineno}): {exc.message}",
-        )
-
-    detected = sorted(meta.find_undeclared_variables(ast))
-    available = set(ctx.keys())
-    used = [v for v in detected if v in available]
-    missing = [v for v in detected if v not in available]
-
-    # 缺失变量用 "«{var}»" 占位渲染，让用户看到模板形状但能识别未提供的占位
-    render_ctx = dict(ctx)
-    for v in missing:
-        render_ctx[v] = f"«{v}»"
-
-    try:
-        rendered = env.from_string(payload.template).render(**render_ctx)
-    except Exception as exc:  # noqa: BLE001
-        return PromptPreviewOut(
-            rendered="",
-            vars_detected=detected,
-            vars_used=used,
-            error=f"渲染失败: {exc}",
-        )
-
-    err = None
-    if missing:
-        err = f"模板引用了样例上下文未提供的变量: {', '.join(missing)}（已用 «{{var}}» 占位）"
+    """渲染 prompt 模板到样例 context；逻辑在 services/prompt_lifecycle.render_preview。"""
+    result = render_preview(payload.template)
     return PromptPreviewOut(
-        rendered=rendered,
-        vars_detected=detected,
-        vars_used=used,
-        error=err,
+        rendered=result.rendered,
+        vars_detected=result.vars_detected,
+        vars_used=result.vars_used,
+        error=result.error,
     )
 
 
@@ -280,7 +117,7 @@ def update_prompt(
     if not obj:
         raise HTTPException(404, "prompt not found")
 
-    in_use = _count_prompt_in_use(db, obj)
+    in_use = count_prompt_in_use(db, obj)
     if in_use > 0:
         raise HTTPException(
             409,
@@ -293,7 +130,7 @@ def update_prompt(
         updates.pop(forbidden, None)
     # 改 prompt_template 时强制做 jinja2 语法校验
     if "prompt_template" in updates:
-        _validate_jinja2_template(updates["prompt_template"])
+        _validate_template_or_400(updates["prompt_template"])
     for k, v in updates.items():
         setattr(obj, k, v)
     db.commit()
@@ -308,7 +145,7 @@ def delete_prompt(prompt_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "prompt not found")
     if obj.is_active:
         raise HTTPException(409, "active prompt cannot be deleted; activate another version first")
-    in_use = _count_prompt_in_use(db, obj)
+    in_use = count_prompt_in_use(db, obj)
     if in_use > 0:
         raise HTTPException(409, f"this prompt has been used by {in_use} runs, cannot delete")
     db.delete(obj)
@@ -322,7 +159,7 @@ def clone_prompt(prompt_id: int, db: Session = Depends(get_db)):
     if not src:
         raise HTTPException(404, "prompt not found")
 
-    new_tag = _next_version_tag(db, src.dimension_code, src.version_tag)
+    new_tag = next_version_tag(db, src.dimension_code, src.version_tag)
     obj = JudgePromptVersion(
         dimension_code=src.dimension_code,
         version_tag=new_tag,
@@ -367,7 +204,7 @@ def prompt_performance(prompt_id: int, db: Session = Depends(get_db)):
     if not obj:
         raise HTTPException(404, "prompt not found")
 
-    runs = _runs_referencing_prompt(db, obj)
+    runs = runs_referencing_prompt(db, obj)
     dim_col = f"{obj.dimension_code}_score"
 
     items: list[JudgePromptPerformanceItem] = []

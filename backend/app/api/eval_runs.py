@@ -49,6 +49,8 @@ from app.services.exporter import (
     export_eval_run_xlsx,
 )
 from app.services.scoring import PASS_THRESHOLD, aggregate_dimension_summary, bootstrap_ci
+from app.services.dashboard import compute_cost_summary
+from app.services.badcase import select_badcases
 
 router = APIRouter(prefix="/api/eval-runs", tags=["eval-runs"])
 
@@ -191,7 +193,7 @@ def get_dashboard(run_id: int, db: Session = Depends(get_db)):
             continue
         b = min(int(c.weighted_score * 10), 9)
         buckets[f"{b/10:.1f}-{(b+1)/10:.1f}"] += 1
-    cost_summary = _compute_cost_summary(db, run_id, len(cases))
+    cost_summary = compute_cost_summary(db, run_id, len(cases))
     return EvalRunDashboard(
         run=run,
         dimension_summary=summary,
@@ -200,56 +202,7 @@ def get_dashboard(run_id: int, db: Session = Depends(get_db)):
     )
 
 
-def _compute_cost_summary(db: Session, run_id: int, session_count: int) -> dict:
-    """聚合本 run 的 eval_call_cost：总成本 + per-dim breakdown。
-    无数据时返回 zeros（兼容历史 run，前端可据 total_calls=0 显示"未埋点"）。
-    """
-    from app.models import EvalCallCost  # 局部 import 避免循环
-
-    rows = (
-        db.query(EvalCallCost)
-        .join(EvalCaseResult, EvalCaseResult.id == EvalCallCost.eval_case_result_id)
-        .filter(EvalCaseResult.eval_run_id == run_id)
-        .all()
-    )
-    if not rows:
-        return {
-            "total_calls": 0,
-            "total_prompt_tokens": 0,
-            "total_completion_tokens": 0,
-            "total_cost_usd": 0.0,
-            "total_cost_cny": 0.0,
-            "cost_per_session_cny": 0.0,
-            "breakdown_by_dim": [],
-        }
-    total_usd = sum(r.cost_usd for r in rows)
-    total_cny = sum(r.cost_cny for r in rows)
-    by_dim: dict[str, dict] = {}
-    for r in rows:
-        d = by_dim.setdefault(
-            r.dimension_code,
-            {"dim_code": r.dimension_code, "calls": 0, "cost_cny": 0.0, "cost_usd": 0.0},
-        )
-        d["calls"] += 1
-        d["cost_cny"] += r.cost_cny
-        d["cost_usd"] += r.cost_usd
-    return {
-        "total_calls": len(rows),
-        "total_prompt_tokens": sum(r.prompt_tokens for r in rows),
-        "total_completion_tokens": sum(r.completion_tokens for r in rows),
-        "total_cost_usd": round(total_usd, 4),
-        "total_cost_cny": round(total_cny, 4),
-        "cost_per_session_cny": round(total_cny / session_count, 4) if session_count else 0.0,
-        "breakdown_by_dim": [
-            {
-                "dim_code": d["dim_code"],
-                "calls": d["calls"],
-                "cost_cny": round(d["cost_cny"], 4),
-                "cost_usd": round(d["cost_usd"], 4),
-            }
-            for d in sorted(by_dim.values(), key=lambda x: x["dim_code"])
-        ],
-    }
+# cost summary 已下沉到 services/dashboard.py:compute_cost_summary
 
 
 @router.post("/{run_id}/cancel")
@@ -436,10 +389,6 @@ def get_case(run_id: int, case_id: int, db: Session = Depends(get_db)):
 _VALID_DIMS = {"dim1", "dim2", "dim3", "dim4", "dim5", "dim6"}
 
 
-def _case_dim_score(case: EvalCaseResult, dim: str) -> float | None:
-    return getattr(case, f"{dim}_score", None)
-
-
 @router.get("/{run_id}/badcases", response_model=BadcaseListResponse)
 def list_badcases(
     run_id: int,
@@ -451,22 +400,23 @@ def list_badcases(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ):
-    """列出 badcase（按 dim 或加权总分过滤），含 tag facet 与统计。"""
+    """列出 badcase（按 dim 或加权总分过滤），含 tag facet 与统计。
+
+    业务逻辑（filter / sort / facet / stats）在 services/badcase.py:select_badcases；
+    本 router 只做参数校验、加载、schema 构造。
+    """
     run = db.get(EvalRun, run_id)
     if run is None:
         raise HTTPException(404, f"eval_run id={run_id} 不存在")
-
     if dim_filter is not None and dim_filter not in _VALID_DIMS:
         raise HTTPException(400, f"dim_filter='{dim_filter}' 必须为 dim1..dim6 或 None")
 
-    # ---------- 拉该 run 全部 case（一次性，用于统计 + facet）----------
+    # 拉该 run 全部 case + tag（一次性，service 在内存做筛选/排序/分页）
     all_cases = (
         db.query(EvalCaseResult)
         .filter(EvalCaseResult.eval_run_id == run_id)
         .all()
     )
-
-    # case_id → list[BadcaseTag]
     case_ids = [c.id for c in all_cases]
     tags_by_case: dict[int, list[BadcaseTag]] = defaultdict(list)
     if case_ids:
@@ -478,83 +428,25 @@ def list_badcases(
         ):
             tags_by_case[t.eval_case_result_id].append(t)
 
-    # ---------- stats ----------
-    # B.1 deferred fix: below_threshold 按请求 score_max 动态计算，
-    # 不再硬编码 PASS_THRESHOLD=0.6（保持 stats 与列表过滤口径一致）。
-    total_cases = len(all_cases)
-    below_threshold = sum(
-        1 for c in all_cases if (c.weighted_score is not None and c.weighted_score < score_max)
+    sel = select_badcases(
+        all_cases=all_cases,
+        tags_by_case=tags_by_case,
+        dim_filter=dim_filter,
+        score_max=score_max,
+        tag_filter=tag_filter,
+        confirmed=confirmed,
+        limit=limit,
+        offset=offset,
     )
-    tagged_ids = {cid for cid, ts in tags_by_case.items() if ts}
-    confirmed_ids = {
-        cid for cid, ts in tags_by_case.items() if any(t.is_confirmed for t in ts)
-    }
     stats = BadcaseStats(
-        total_cases=total_cases,
-        below_threshold=below_threshold,
-        tagged=len(tagged_ids),
-        confirmed=len(confirmed_ids),
+        total_cases=sel.total_cases,
+        below_threshold=sel.below_threshold,
+        tagged=sel.tagged_count,
+        confirmed=sel.confirmed_count,
     )
-
-    # ---------- tag facet ----------
-    tag_counter: dict[str, int] = defaultdict(int)
-    for ts in tags_by_case.values():
-        seen_per_case: set[str] = set()
-        for t in ts:
-            # 同一 case 内同名 tag 多次仅计 1 次
-            if t.tag in seen_per_case:
-                continue
-            seen_per_case.add(t.tag)
-            tag_counter[t.tag] += 1
-    tag_facets = sorted(
-        [BadcaseFacet(tag=k, count=v) for k, v in tag_counter.items()],
-        key=lambda x: (-x.count, x.tag),
-    )
-
-    # ---------- 过滤 ----------
-    # C.1 reviewer P1: 与 below_threshold 边界对齐 —— 都用严格小于 score_max
-    # （等于 score_max 的 case 不视为"低于阈值"也不出现在列表中）
-    def _passes(case: EvalCaseResult) -> bool:
-        score = (
-            _case_dim_score(case, dim_filter) if dim_filter else case.weighted_score
-        )
-        if score is None:
-            return False
-        if score >= score_max:
-            return False
-        return True
-
-    candidates = [c for c in all_cases if _passes(c)]
-
-    if tag_filter:
-        candidates = [
-            c for c in candidates
-            if any(t.tag == tag_filter for t in tags_by_case.get(c.id, []))
-        ]
-
-    if confirmed is not None:
-        if confirmed:
-            candidates = [
-                c for c in candidates
-                if any(t.is_confirmed for t in tags_by_case.get(c.id, []))
-            ]
-        else:
-            candidates = [
-                c for c in candidates
-                if not any(t.is_confirmed for t in tags_by_case.get(c.id, []))
-            ]
-
-    # 按 dim/weighted 分数升序（最差先）
-    def _sort_key(c: EvalCaseResult) -> tuple:
-        score = (
-            _case_dim_score(c, dim_filter) if dim_filter else c.weighted_score
-        )
-        # None 沉底
-        return (1 if score is None else 0, score if score is not None else 0.0, c.id)
-
-    candidates.sort(key=_sort_key)
-    total = len(candidates)
-    page = candidates[offset : offset + limit]
+    tag_facets = [BadcaseFacet(tag=t, count=c) for t, c in sel.tag_counts]
+    page = sel.page
+    total = sel.total_filtered
 
     # ---------- 拉本页所需 conversation + 首轮 turn ----------
     page_conv_ids = list({c.conversation_id for c in page})
