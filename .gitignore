@@ -46,3 +46,6 @@ skills-lock.json
 !docs/reviews/screenshots/*.png
 !docs/reviews/screenshots/*.jpeg
 !docs/reviews/screenshots/*.jpg
+
+# --- pg_dump 备份产物（M2.4） ---
+backups/

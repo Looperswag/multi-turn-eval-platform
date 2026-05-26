@@ -79,6 +79,43 @@ proxy_read_timeout 3600s;        # SSE 长连接
 
 API key 比较已用 `secrets.compare_digest` 防 timing 攻击；xlsx 解析已通过 `defusedxml.defuse_stdlib()` 防 XXE / billion-laughs。
 
+### 备份与灾备（M2.4）
+
+| 指标 | 目标 | 说明 |
+|---|---|---|
+| **RPO**（数据丢失窗口） | ≤ 24h | 每日 03:00 `pg_dump` 全备 |
+| **RTO**（恢复时间） | ≤ 30 min | 单文件 `gunzip \| psql` 流式恢复 |
+| 保留期 | 30 天本地 | 超过自动清理；S3 可选异地副本 |
+| 兜底 | 自动 pre-restore 快照 | restore 前先 dump 当前 DB 防误操作 |
+
+**每日备份脚本** — `backend/scripts/backup.sh`：
+
+```bash
+# 本地备份
+./backend/scripts/backup.sh
+
+# 同时推 S3（需 aws cli）
+S3_BUCKET=my-bucket ./backend/scripts/backup.sh
+
+# Cron（每日凌晨 3 点）
+0 3 * * * cd /opt/platform && ./backend/scripts/backup.sh >> /var/log/platform-backup.log 2>&1
+```
+
+**恢复演练（restore drill）** — 建议每季度跑一次：
+
+```bash
+# 1. 在 staging 环境跑：
+./backend/scripts/restore.sh ./backups/eval_platform-20260526-030000.sql.gz
+# 输入 'yes' 确认；脚本会先 dump 当前 DB 作为 pre-restore 快照
+
+# 2. 自检输出（alembic_version / eval_run / eval_case_result 三表行数）
+#    任一为 0 应视为恢复异常
+
+# 3. 烟测：跑 5-session run + 看板验证
+```
+
+**未在范围内**：WAL 增量备份（POSTGRES + wal-g/barman 部署较重，待 S3 路径成熟后引入）。
+
 ### 启动检查清单
 - [ ] `.env` 不在 git（已 .gitignore）
 - [ ] API_KEY 使用 32 字节随机字符串（避免 dev-key-change-me）
