@@ -1,11 +1,36 @@
 """评分聚合：从单 conversation 的 6 维结果计算 weighted_score；从 run 全量结果汇总。"""
 from __future__ import annotations
 
+import random
 from typing import Iterable
 
 from app.core.config import DEFAULT_DIMENSION_WEIGHTS
 
 PASS_THRESHOLD = 0.6  # 见准出标准：会话级 ≥0.6 为 GOOD
+MIN_CI_SAMPLE = 30  # n<30 时 bootstrap 不返回 CI（统计效力不足）
+
+
+def bootstrap_ci(
+    values: list[float], n_iters: int = 1000, ci: float = 0.95, seed: int = 0
+) -> tuple[float | None, float | None]:
+    """对样本均值做 bootstrap 重采样，返回 (low, high) 95% CI。
+
+    n<MIN_CI_SAMPLE 时返回 (None, None)——告诉调用方"样本不足，不可信"。
+    seed 固定让相同输入产生相同 CI（避免前端 polling 时数值抖动）。
+    """
+    if len(values) < MIN_CI_SAMPLE:
+        return None, None
+    rng = random.Random(seed)
+    means: list[float] = []
+    n = len(values)
+    for _ in range(n_iters):
+        sample = [values[rng.randrange(n)] for _ in range(n)]
+        means.append(sum(sample) / n)
+    means.sort()
+    alpha = (1 - ci) / 2
+    low_idx = max(0, int(alpha * n_iters))
+    high_idx = min(n_iters - 1, int((1 - alpha) * n_iters))
+    return round(means[low_idx], 4), round(means[high_idx], 4)
 
 
 def conversation_weighted_score(
@@ -61,6 +86,7 @@ def aggregate_dimension_summary(
             )
             continue
         passed = [v for v in values if v >= PASS_THRESHOLD]
+        ci_low, ci_high = bootstrap_ci(values)
         out.append(
             {
                 "dimension_code": code,
@@ -70,6 +96,8 @@ def aggregate_dimension_summary(
                 "pass_rate": round(len(passed) / len(values), 4),
                 "min_score": min(values),
                 "max_score": max(values),
+                "mean_ci_low": ci_low,
+                "mean_ci_high": ci_high,
             }
         )
     return out

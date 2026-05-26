@@ -25,15 +25,14 @@ const TYPE_LABEL: Record<string, string> = {
   human: "机评 vs 人工",
 };
 
-const LEVEL_LABEL = ["低 (0)", "中 (0.5)", "高 (1)"];
-
-function kappaVerbiage(k: number | null): string {
-  if (k == null) return "样本不足";
-  if (k >= 0.8) return "几乎完全一致";
-  if (k >= 0.6) return "显著一致";
-  if (k >= 0.4) return "中等一致";
-  if (k >= 0.2) return "弱一致";
-  return "差或反向";
+// Cohen's d 效应量解读（M1.1：替代 run-vs-run 错位的 kappa）
+function effectSizeVerbiage(d: number | null): string {
+  if (d == null) return "样本不足";
+  const a = Math.abs(d);
+  if (a < 0.2) return "差异可忽略";
+  if (a < 0.5) return "小幅差异";
+  if (a < 0.8) return "中等差异";
+  return "显著差异";
 }
 
 export default async function ComparisonDetailPage({ params }: { params: { id: string } }) {
@@ -63,32 +62,24 @@ export default async function ComparisonDetailPage({ params }: { params: { id: s
   const deltaScore =
     aScore != null && bScore != null ? bScore - aScore : null;
 
-  const quoteValue =
-    c.type === "judge"
-      ? payload.kappa
-      : deltaScore;
-  const quoteLabel = c.type === "judge" ? "Cohen's κ" : "Δ weighted score";
+  // M1.1: 主标题数值统一用 Δ weighted score（包括 type=judge），
+  // 效应量另作辅助卡展示。kappa 不再用于 run-vs-run（语义错位）。
+  const quoteValue = deltaScore;
+  const quoteLabel = "Δ weighted score";
   const quoteCaption =
-    c.type === "judge"
-      ? kappaVerbiage(payload.kappa)
-      : deltaScore == null
-        ? "—"
-        : deltaScore > 0
-          ? "Run B 整体优于 Run A"
-          : deltaScore < 0
-            ? "Run B 整体差于 Run A"
-            : "完全持平";
-
+    deltaScore == null
+      ? "—"
+      : deltaScore > 0
+        ? "Run B 整体优于 Run A"
+        : deltaScore < 0
+          ? "Run B 整体差于 Run A"
+          : "完全持平";
   const quoteColor =
-    c.type === "judge"
-      ? quoteValue != null && quoteValue >= 0.6
-        ? "var(--color-accent)"
-        : "var(--color-warn)"
-      : quoteValue != null && quoteValue > 0
-        ? "var(--color-accent)"
-        : quoteValue != null && quoteValue < 0
-          ? "var(--color-warn)"
-          : "var(--color-ink-2)";
+    quoteValue != null && quoteValue > 0
+      ? "var(--color-accent)"
+      : quoteValue != null && quoteValue < 0
+        ? "var(--color-warn)"
+        : "var(--color-ink-2)";
 
   return (
     <div className="mx-auto flex max-w-[1200px] min-w-0 flex-col gap-3xl pb-4xl">
@@ -167,6 +158,7 @@ export default async function ComparisonDetailPage({ params }: { params: { id: s
                   <th className="py-sm pr-md text-right font-normal">A 均值</th>
                   <th className="py-sm pr-md text-right font-normal">B 均值</th>
                   <th className="py-sm pr-md text-right font-normal">Δ</th>
+                  <th className="py-sm pr-md text-right font-normal">Δ 95% CI</th>
                   <th className="py-sm text-right font-normal">p</th>
                 </tr>
               </thead>
@@ -197,9 +189,16 @@ export default async function ComparisonDetailPage({ params }: { params: { id: s
                           ? "—"
                           : `${d.delta > 0 ? "+" : ""}${d.delta.toFixed(3)}`}
                       </td>
+                      <td className="py-sm pr-md text-right font-mono text-xs tabular-nums text-ink-3">
+                        {d.delta_ci_low == null || d.delta_ci_high == null ? (
+                          <span className="text-ink-4">N/A (n&lt;30)</span>
+                        ) : (
+                          `[${d.delta_ci_low > 0 ? "+" : ""}${d.delta_ci_low.toFixed(3)}, ${d.delta_ci_high > 0 ? "+" : ""}${d.delta_ci_high.toFixed(3)}]`
+                        )}
+                      </td>
                       <td className="py-sm text-right text-xs">
                         {d.chi_square_pvalue == null ? (
-                          <span className="text-ink-4">n={d.sample_size}</span>
+                          <span className="badge badge-neutral text-[10px]">N/A (n&lt;30)</span>
                         ) : (
                           <span
                             className={`font-mono tabular-nums ${
@@ -240,68 +239,27 @@ export default async function ComparisonDetailPage({ params }: { params: { id: s
         <DimensionMovementTabs movements={payload.dimension_movements} dimCodes={dimCodes} />
       </section>
 
-      {/* Judge 类型专属：一致率 */}
-      {c.type === "judge" && (
-        <section className="flex flex-col gap-md">
-          <SectionHead
-            eyebrow="一致率"
-            title="Cohen's weighted κ · 混淆矩阵"
-            caption="quadratic weights · 三档（0 / 0.5 / 1）。"
-          />
-          <div className="grid grid-cols-1 gap-xl lg:grid-cols-[1fr_2fr]">
-            <div className="flex flex-col gap-sm border-r-0 border-rule lg:border-r lg:pr-xl">
-              <div className="text-caption uppercase tracking-[0.08em] text-ink-3">κ 值</div>
-              <div
-                className="font-display tabular-nums leading-none"
-                style={{ fontSize: "var(--text-display-s)", color: "var(--color-ink)" }}
-              >
-                {payload.kappa == null ? "—" : payload.kappa.toFixed(3)}
-              </div>
-              <div className="text-sm italic-display text-ink-3">
-                {kappaVerbiage(payload.kappa)}
-              </div>
-            </div>
-            <div>
-              <div className="mb-sm text-caption uppercase tracking-[0.08em] text-ink-3">混淆矩阵</div>
-              {payload.confusion_matrix ? (
-                <table className="text-sm">
-                  <thead>
-                    <tr>
-                      <th className="px-sm py-2xs text-left text-caption uppercase tracking-[0.08em] text-ink-3 font-normal">
-                        A \ B
-                      </th>
-                      {LEVEL_LABEL.map((l) => (
-                        <th key={l} className="px-md py-2xs text-caption uppercase tracking-[0.08em] text-ink-3 font-normal">
-                          {l}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {payload.confusion_matrix.map((row, i) => (
-                      <tr key={i}>
-                        <td className="px-sm py-xs text-ink-3 font-mono text-xs">{LEVEL_LABEL[i]}</td>
-                        {row.map((v, j) => (
-                          <td
-                            key={j}
-                            className={`border border-rule px-md py-xs text-center font-mono tabular-nums ${
-                              i === j ? "bg-accent-soft text-accent font-medium" : "text-ink-2"
-                            }`}
-                          >
-                            {v}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="text-sm italic-display text-ink-3">无数据</div>
-              )}
-            </div>
+      {/* 分布差距效应量（M1.1：替代 run-vs-run 错位的 kappa） */}
+      <section className="flex flex-col gap-md">
+        <SectionHead
+          eyebrow="分布差距"
+          title="Cohen's d 效应量"
+          caption="衡量两个 run 的 weighted_score 分布差距（|d|<0.2 可忽略 · <0.5 小 · <0.8 中 · ≥0.8 显著）。"
+        />
+        <div className="flex flex-col gap-sm">
+          <div
+            className="font-display tabular-nums leading-none"
+            style={{ fontSize: "var(--text-display-s)", color: "var(--color-ink)" }}
+          >
+            {payload.score_distribution_overlap == null
+              ? "—"
+              : payload.score_distribution_overlap.toFixed(3)}
           </div>
-        </section>
-      )}
+          <div className="text-sm italic-display text-ink-3">
+            {effectSizeVerbiage(payload.score_distribution_overlap)}
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

@@ -54,6 +54,9 @@ class DimDelta(BaseModel):
     avg_b: float | None
     delta: float | None
     chi_square_pvalue: float | None
+    # M1.1: bootstrap CI of mean delta（任一组 n<30 时为 None）
+    delta_ci_low: float | None = None
+    delta_ci_high: float | None = None
     sample_size: int
 
 
@@ -66,8 +69,8 @@ class ComparisonPayload(BaseModel):
     session_movement: DimensionMovement
     dimension_movements: dict[str, DimensionMovement]
     dim_deltas: list[DimDelta]
-    kappa: float | None
-    confusion_matrix: list[list[int]] | None
+    # M1.1: 替代错位 kappa——Cohen's d 衡量两 run 分布差距的标准化效应量
+    score_distribution_overlap: float | None = None
     computed_at: str | None = None
 
 

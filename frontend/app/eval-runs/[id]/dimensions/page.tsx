@@ -193,6 +193,14 @@ function DimensionView({ slice, runId }: { slice: DimensionSliceResponse; runId:
           >
             {fmtScore(stats.avg_score)}
           </span>
+          {/* M1.1: bootstrap 95% CI；n<30 时为 null → badge 提示样本不足 */}
+          {stats.mean_ci_low != null && stats.mean_ci_high != null ? (
+            <span className="font-mono text-xs tabular-nums text-ink-3">
+              95% CI [{stats.mean_ci_low.toFixed(3)}, {stats.mean_ci_high.toFixed(3)}]
+            </span>
+          ) : stats.applicable_count > 0 ? (
+            <span className="badge badge-neutral text-[10px]">样本不足 (n&lt;30) · CI 不可信</span>
+          ) : null}
           <span className="font-mono text-xs tabular-nums text-ink-3">
             min {fmtScore(stats.min_score, 2)} · max {fmtScore(stats.max_score, 2)}
           </span>

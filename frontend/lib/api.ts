@@ -50,6 +50,9 @@ export type DimensionSummary = {
   pass_rate: number | null;
   min_score: number | null;
   max_score: number | null;
+  // M1.1: bootstrap 95% CI（n<30 时为 null）
+  mean_ci_low: number | null;
+  mean_ci_high: number | null;
 };
 
 export type EvalRunDashboard = {
@@ -131,6 +134,9 @@ export type DimDelta = {
   avg_b: number | null;
   delta: number | null;
   chi_square_pvalue: number | null;
+  // M1.1: bootstrap CI of delta（任一组 n<30 时为 null）
+  delta_ci_low: number | null;
+  delta_ci_high: number | null;
   sample_size: number;
 };
 
@@ -143,8 +149,8 @@ export type ComparisonPayload = {
   session_movement: DimensionMovement;
   dimension_movements: Record<string, DimensionMovement>;
   dim_deltas: DimDelta[];
-  kappa: number | null;
-  confusion_matrix: number[][] | null;
+  // M1.1: 替代错位 kappa——Cohen's d 衡量两 run 分布差距
+  score_distribution_overlap: number | null;
   computed_at: string | null;
 };
 
@@ -241,6 +247,9 @@ export type DimensionStats = {
   max_score: number | null;
   pass_count: number;
   pass_rate: number | null;
+  // M1.1: bootstrap 95% CI（n<30 时为 null）
+  mean_ci_low: number | null;
+  mean_ci_high: number | null;
 };
 
 export type DimensionHistBucket = {

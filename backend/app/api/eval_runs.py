@@ -48,7 +48,7 @@ from app.services.exporter import (
     export_eval_run_pdf,
     export_eval_run_xlsx,
 )
-from app.services.scoring import PASS_THRESHOLD, aggregate_dimension_summary
+from app.services.scoring import PASS_THRESHOLD, aggregate_dimension_summary, bootstrap_ci
 
 router = APIRouter(prefix="/api/eval-runs", tags=["eval-runs"])
 
@@ -796,8 +796,11 @@ def get_dimension_slice(
             max_score=None,
             pass_count=0,
             pass_rate=None,
+            mean_ci_low=None,
+            mean_ci_high=None,
         )
     else:
+        ci_low, ci_high = bootstrap_ci(scores)
         stats = DimensionStats(
             total_cases=total_cases,
             applicable_count=applicable_count,
@@ -807,6 +810,8 @@ def get_dimension_slice(
             max_score=max(scores),
             pass_count=pass_count,
             pass_rate=round(pass_count / applicable_count, 4),
+            mean_ci_low=ci_low,
+            mean_ci_high=ci_high,
         )
 
     histogram = [DimensionHistBucket(bucket=k, count=v) for k, v in buckets.items()]

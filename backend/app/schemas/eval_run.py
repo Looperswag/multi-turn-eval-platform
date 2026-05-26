@@ -56,6 +56,9 @@ class DimensionSummary(BaseModel):
     pass_rate: float | None
     min_score: float | None
     max_score: float | None
+    # M1.1: bootstrap 95% CI；n<30 时为 None（统计效力不足）
+    mean_ci_low: float | None = None
+    mean_ci_high: float | None = None
 
 
 class EvalRunDashboard(BaseModel):
@@ -75,6 +78,9 @@ class DimensionPromptInfo(BaseModel):
 class DimensionStats(BaseModel):
     total_cases: int
     applicable_count: int
+    # M1.1: bootstrap 95% CI；n<30 时为 None
+    mean_ci_low: float | None = None
+    mean_ci_high: float | None = None
     trigger_rate: float | None
     avg_score: float | None
     min_score: float | None

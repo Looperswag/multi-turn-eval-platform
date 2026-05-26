@@ -236,7 +236,62 @@ def compute_movements(
 
 
 # ====================================================================
+# M1.1：bootstrap CI for two-sample mean difference + Cohen's d 效应量
+# ====================================================================
+
+
+def _bootstrap_delta_ci(
+    a_values: list[float],
+    b_values: list[float],
+    n_iters: int = 1000,
+    ci: float = 0.95,
+    seed: int = 0,
+) -> tuple[float | None, float | None]:
+    """对两组样本的均值差做 bootstrap 重采样，返回 (delta_low, delta_high) 95% CI。
+
+    各自任一组 n<30 时返回 (None, None)。配合 scoring.bootstrap_ci 的阈值。
+    """
+    if len(a_values) < 30 or len(b_values) < 30:
+        return None, None
+    import random as _r
+    rng = _r.Random(seed)
+    na, nb = len(a_values), len(b_values)
+    deltas: list[float] = []
+    for _ in range(n_iters):
+        sa = sum(a_values[rng.randrange(na)] for _ in range(na)) / na
+        sb = sum(b_values[rng.randrange(nb)] for _ in range(nb)) / nb
+        deltas.append(sb - sa)
+    deltas.sort()
+    alpha = (1 - ci) / 2
+    low_idx = max(0, int(alpha * n_iters))
+    high_idx = min(n_iters - 1, int((1 - alpha) * n_iters))
+    return round(deltas[low_idx], 4), round(deltas[high_idx], 4)
+
+
+def cohens_d_effect_size(
+    a_values: list[float], b_values: list[float]
+) -> float | None:
+    """Cohen's d = (mean_b - mean_a) / pooled_std。
+    用于替代 run-vs-run 错位的 kappa（kappa 语义是 rater 一致性，
+    run_a / run_b 用不同 judge 时不该用 kappa）。
+
+    返回 None 表示样本不足或方差为 0（无判别意义）。
+    """
+    if len(a_values) < 2 or len(b_values) < 2:
+        return None
+    mean_a = sum(a_values) / len(a_values)
+    mean_b = sum(b_values) / len(b_values)
+    var_a = sum((v - mean_a) ** 2 for v in a_values) / (len(a_values) - 1)
+    var_b = sum((v - mean_b) ** 2 for v in b_values) / (len(b_values) - 1)
+    pooled = ((var_a + var_b) / 2) ** 0.5
+    if pooled == 0:
+        return None
+    return round((mean_b - mean_a) / pooled, 4)
+
+
+# ====================================================================
 # Spec-5：Cohen's weighted kappa（quadratic）— 手写实现，不依赖 sklearn
+# 仅用于 human-vs-judge 一致性场景（agreement.py），不再用于 run-vs-run
 # ====================================================================
 
 
@@ -477,12 +532,13 @@ def compute_comparison_payload(
                     "avg_b": None,
                     "delta": None,
                     "chi_square_pvalue": None,
+                    "delta_ci_low": None,
+                    "delta_ci_high": None,
                     "sample_size": 0,
                 }
                 for d in dim_codes
             ],
-            "kappa": None,
-            "confusion_matrix": None,
+            "score_distribution_overlap": None,
             "computed_at": datetime.utcnow().isoformat(),
         }
 
@@ -505,6 +561,7 @@ def compute_comparison_payload(
             else None
         )
         p_value = chi_square_dim(a_scores, b_scores)
+        delta_ci_low, delta_ci_high = _bootstrap_delta_ci(a_valid, b_valid)
         dim_deltas.append(
             {
                 "dim_code": dim,
@@ -513,25 +570,18 @@ def compute_comparison_payload(
                 "avg_b": avg_b,
                 "delta": delta,
                 "chi_square_pvalue": p_value,
+                "delta_ci_low": delta_ci_low,
+                "delta_ci_high": delta_ci_high,
                 "sample_size": min(len(a_valid), len(b_valid)),
             }
         )
 
-    # Kappa：仅对 type=judge 时有强意义；其他类型也计算供参考（前端 type=judge 才高亮）
-    # 这里用 weighted_score（连续），但 kappa 要求 ordinal 0/0.5/1，所以用 case 级 weighted_score
-    # ≥0.6 视为 1，<0.3 视为 0，中间视为 0.5（粗粒度三档），便于 ordinal κ
-    def _quantize(s: float | None) -> float | None:
-        if s is None:
-            return None
-        if s >= 0.6:
-            return 1.0
-        if s < 0.3:
-            return 0.0
-        return 0.5
-
-    a_quant = [_quantize(ca.weighted_score) for ca, _, _ in aligned_pairs]
-    b_quant = [_quantize(cb.weighted_score) for _, cb, _ in aligned_pairs]
-    kappa, conf_matrix = cohens_weighted_kappa(a_quant, b_quant)
+    # M1.1：run-vs-run 不再用 Cohen's κ（语义错位 — kappa 是 rater 一致性，
+    # 而 run_a/run_b 用不同 judge 时 judge 输出差异不该被当作 rater 不一致）。
+    # 改用 Cohen's d 效应量作为 score_distribution_overlap 量化指标。
+    a_scores_full = [ca.weighted_score for ca, _, _ in aligned_pairs if ca.weighted_score is not None]
+    b_scores_full = [cb.weighted_score for _, cb, _ in aligned_pairs if cb.weighted_score is not None]
+    score_distribution_overlap = cohens_d_effect_size(a_scores_full, b_scores_full)
 
     return {
         "type": ctype,
@@ -542,7 +592,6 @@ def compute_comparison_payload(
         "session_movement": movements["session_movement"],
         "dimension_movements": movements["dimension_movements"],
         "dim_deltas": dim_deltas,
-        "kappa": kappa,
-        "confusion_matrix": conf_matrix,
+        "score_distribution_overlap": score_distribution_overlap,
         "computed_at": datetime.utcnow().isoformat(),
     }

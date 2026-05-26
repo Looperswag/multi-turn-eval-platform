@@ -54,7 +54,7 @@ export default async function ComparisonsListPage() {
                 <th className="py-sm pr-md text-left font-normal">类型</th>
                 <th className="py-sm pr-md text-right font-normal">A → B</th>
                 <th className="py-sm pr-md text-right font-normal">对齐</th>
-                <th className="py-sm pr-md text-right font-normal">κ</th>
+                <th className="py-sm pr-md text-right font-normal">Cohen's d</th>
                 <th className="py-sm text-right font-normal">创建</th>
               </tr>
             </thead>
@@ -81,7 +81,9 @@ export default async function ComparisonsListPage() {
                   </td>
                   <td className="py-sm pr-md text-right font-mono tabular-nums">{c.payload.aligned_count}</td>
                   <td className="py-sm pr-md text-right font-mono tabular-nums">
-                    {c.payload.kappa == null ? "—" : c.payload.kappa.toFixed(3)}
+                    {c.payload.score_distribution_overlap == null
+                      ? "—"
+                      : c.payload.score_distribution_overlap.toFixed(3)}
                   </td>
                   <td className="py-sm text-right font-mono text-xs tabular-nums text-ink-3">
                     {new Date(c.created_at).toLocaleDateString()}
