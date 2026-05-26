@@ -38,6 +38,43 @@ function scoreLabel(score: number | null, applicable: boolean | null): string {
   return score.toFixed(2);
 }
 
+// M2.1: 4 段优先级 bucket — 高优先（机评 0）先标，低优先（机评 1）兜底
+type BucketKey = "zero" | "half" | "one" | "na";
+const BUCKET_ORDER: BucketKey[] = ["zero", "half", "one", "na"];
+const BUCKET_LABELS: Record<BucketKey, string> = {
+  zero: "优先 — 机评 0 分",
+  half: "中等 — 机评 0.5",
+  one: "低优先 — 机评 1 分",
+  na: "N/A — 机评不适用",
+};
+const BUCKET_HINTS: Record<BucketKey, string> = {
+  zero: "机评判失败，优先人工复核",
+  half: "灰色地带，可能更需要人审",
+  one: "机评判通过，抽检即可",
+  na: "applicable=false，仅需确认是否真不适用",
+};
+
+function bucketOf(item: QueueItem): BucketKey {
+  if (item.judge_applicable === false) return "na";
+  const s = item.judge_score;
+  if (s == null) return "half";
+  if (s < 0.25) return "zero";
+  if (s < 0.75) return "half";
+  return "one";
+}
+
+function bucketize(items: QueueItem[]): Record<BucketKey, QueueItem[]> {
+  const out: Record<BucketKey, QueueItem[]> = { zero: [], half: [], one: [], na: [] };
+  for (const it of items) out[bucketOf(it)].push(it);
+  return out;
+}
+
+function previewQuery(item: QueueItem, maxLen = 30): string {
+  const first = item.turns?.[0]?.user_query || "";
+  if (!first) return "(无 query)";
+  return first.length > maxLen ? first.slice(0, maxLen) + "…" : first;
+}
+
 export default function AnnotationWorkbenchPage() {
   // 顶部筛选
   const [runs, setRuns] = useState<EvalRun[]>([]);
@@ -106,6 +143,62 @@ export default function AnnotationWorkbenchPage() {
     () => queue?.items.find((it) => it.case_id === selectedCaseId),
     [queue, selectedCaseId]
   );
+
+  // M2.1: 按 priority bucket 重排队列，并构造 case_id → bucket 映射，
+  // 让左侧侧栏渲染时按 ZERO → HALF → ONE → NA 分组
+  const bucketed = useMemo(
+    () => (queue ? bucketize(queue.items) : null),
+    [queue],
+  );
+  // 按 bucket 顺序 flatten 出的 case_id 列表 — j/k 键盘导航用
+  const orderedCaseIds = useMemo<number[]>(() => {
+    if (!bucketed) return [];
+    return BUCKET_ORDER.flatMap((bk) => bucketed[bk].map((it) => it.case_id));
+  }, [bucketed]);
+
+  // M2.1: j/k/Space 键盘导航
+  useEffect(() => {
+    if (!queue || orderedCaseIds.length === 0) return;
+    const handler = (e: KeyboardEvent) => {
+      // 避免在 input/textarea 里捕获快捷键
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
+        return;
+      }
+      const currentIdx = selectedCaseId
+        ? orderedCaseIds.indexOf(selectedCaseId)
+        : -1;
+      let nextIdx: number | null = null;
+      if (e.key === "j") {
+        nextIdx = Math.min(currentIdx + 1, orderedCaseIds.length - 1);
+      } else if (e.key === "k") {
+        nextIdx = Math.max(currentIdx - 1, 0);
+      } else if (e.key === " ") {
+        // 跳到下一个未标的 case
+        e.preventDefault();
+        for (let i = currentIdx + 1; i < orderedCaseIds.length; i++) {
+          const id = orderedCaseIds[i];
+          const it = queue.items.find((x) => x.case_id === id);
+          if (it && !it.existing_annotation) {
+            nextIdx = i;
+            break;
+          }
+        }
+      }
+      if (nextIdx != null && nextIdx !== currentIdx) {
+        const nextId = orderedCaseIds[nextIdx];
+        setSelectedCaseId(nextId);
+        // 自动滚动到可视
+        requestAnimationFrame(() => {
+          document
+            .querySelector(`[data-case-id="${nextId}"]`)
+            ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        });
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [queue, orderedCaseIds, selectedCaseId]);
 
   // 切换 case 时重置表单（如果该 case 已有标注则预填）
   useEffect(() => {
@@ -287,41 +380,62 @@ export default function AnnotationWorkbenchPage() {
               {loading ? "..." : queue ? `${queue.total} 条` : "—"}
             </div>
           </div>
-          <div className="max-h-[700px] overflow-y-auto">
+          <div className="px-3 py-2 border-b border-[var(--rule)] text-[10px] text-ink-3 font-mono-feat">
+            键盘 <kbd className="px-1 border border-rule rounded">j</kbd>{" "}
+            <kbd className="px-1 border border-rule rounded">k</kbd> 上/下导航 ·{" "}
+            <kbd className="px-1 border border-rule rounded">Space</kbd> 跳下一未标
+          </div>
+          <div className="max-h-[700px] overflow-y-auto" data-queue-scroll>
             {queue?.items.length === 0 && !loading && (
               <div className="px-4 py-8 text-center text-ink-3 text-sm">
                 队列为空。{annotator.trim() ? "（该 annotator 可能已全部标完）" : "选择 Run + 维度后会自动加载。"}
               </div>
             )}
-            {queue?.items.map((it) => {
-              const isSelected = it.case_id === selectedCaseId;
-              const isDone = !!it.existing_annotation;
+            {bucketed && BUCKET_ORDER.map((bk) => {
+              const items = bucketed[bk];
+              if (items.length === 0) return null;
               return (
-                <button
-                  key={it.case_id}
-                  onClick={() => setSelectedCaseId(it.case_id)}
-                  className={`block w-full text-left px-4 py-2.5 border-b border-[var(--rule)] last:border-0 transition-colors ${
-                    isSelected
-                      ? "bg-[var(--moss-bg)]"
-                      : "hover:bg-[var(--rule)]"
-                  } ${isDone ? "opacity-60" : ""}`}
-                >
-                  <div className="flex items-baseline justify-between gap-2">
-                    <div className="font-mono-feat text-xs text-ink-2 truncate">
-                      {it.conversation_id_src}
+                <section key={bk}>
+                  <header className="sticky top-0 z-10 bg-card-2 px-4 py-2 border-b border-[var(--rule-strong)] flex items-baseline justify-between">
+                    <div>
+                      <div className="uppercase-label text-ink-2">{BUCKET_LABELS[bk]}</div>
+                      <div className="text-[10px] text-ink-3 italic-display mt-0.5">{BUCKET_HINTS[bk]}</div>
                     </div>
-                    <span className={scoreBadgeClass(it.judge_score, it.judge_applicable)}>
-                      {scoreLabel(it.judge_score, it.judge_applicable)}
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-ink-3 mt-1 flex items-center gap-2">
-                    {it.quality_label && (
-                      <span className="badge badge-neutral text-[10px]">{it.quality_label}</span>
-                    )}
-                    {it.dimension_tag && <span className="truncate">{it.dimension_tag}</span>}
-                    {isDone && <span className="text-moss ml-auto">✓ 已标</span>}
-                  </div>
-                </button>
+                    <div className="font-mono-feat text-xs tabular-nums text-ink-3">{items.length}</div>
+                  </header>
+                  {items.map((it) => {
+                    const isSelected = it.case_id === selectedCaseId;
+                    const isDone = !!it.existing_annotation;
+                    return (
+                      <button
+                        key={it.case_id}
+                        data-case-id={it.case_id}
+                        onClick={() => setSelectedCaseId(it.case_id)}
+                        className={`block w-full text-left px-4 py-2.5 border-b border-[var(--rule)] last:border-0 transition-colors ${
+                          isSelected
+                            ? "bg-[var(--moss-bg)] border-l-4 border-l-moss"
+                            : "hover:bg-[var(--rule)] border-l-4 border-l-transparent"
+                        } ${isDone ? "opacity-60" : ""}`}
+                      >
+                        <div className="flex items-baseline justify-between gap-2">
+                          <div className="text-sm text-ink truncate font-medium">
+                            {previewQuery(it)}
+                          </div>
+                          <span className={scoreBadgeClass(it.judge_score, it.judge_applicable)}>
+                            {scoreLabel(it.judge_score, it.judge_applicable)}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-ink-3 mt-1 flex items-center gap-2 font-mono-feat">
+                          <span className="truncate">{it.conversation_id_src}</span>
+                          {it.quality_label && (
+                            <span className="badge badge-neutral text-[10px]">{it.quality_label}</span>
+                          )}
+                          {isDone && <span className="text-moss ml-auto">✓ 已标</span>}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </section>
               );
             })}
           </div>
