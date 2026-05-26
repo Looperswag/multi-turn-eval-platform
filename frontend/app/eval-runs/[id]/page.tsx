@@ -148,31 +148,42 @@ export default async function EvalRunDashboardPage({ params }: { params: { id: s
                 </tr>
               </thead>
               <tbody>
-                {dimension_summary.map((d) => (
-                  <tr
-                    key={d.dimension_code}
-                    className="border-b border-rule last:border-0 transition-colors duration-fast ease-out hover:bg-paper-2"
-                  >
-                    <td className="py-sm">
-                      <div className="text-ink">{d.dimension_name}</div>
-                      <div className="font-mono text-xs text-ink-3">{d.dimension_code}</div>
-                    </td>
-                    <td className="py-sm text-right font-mono tabular-nums">
-                      {d.avg_score == null ? "—" : d.avg_score.toFixed(3)}
-                    </td>
-                    <td className="py-sm text-right font-mono tabular-nums">
-                      {d.pass_rate == null ? "—" : `${(d.pass_rate * 100).toFixed(1)}%`}
-                    </td>
-                    <td className="py-sm text-right font-mono tabular-nums text-ink-2">
-                      {d.sample_count}
-                    </td>
-                    <td className="py-sm text-right font-mono text-xs tabular-nums text-ink-3">
-                      {d.min_score == null
-                        ? "—"
-                        : `${d.min_score.toFixed(2)} / ${d.max_score?.toFixed(2) ?? "—"}`}
-                    </td>
-                  </tr>
-                ))}
+                {dimension_summary.map((d) => {
+                  const enabled = d.avg_score != null;
+                  return (
+                    <tr
+                      key={d.dimension_code}
+                      className="border-b border-rule last:border-0 transition-colors duration-fast ease-out hover:bg-paper-2"
+                    >
+                      <td className="py-sm">
+                        <div className="text-ink">{d.dimension_name}</div>
+                        <div className="font-mono text-xs text-ink-3">{d.dimension_code}</div>
+                      </td>
+                      <td className="py-sm text-right font-mono tabular-nums" colSpan={enabled ? 1 : 4}>
+                        {enabled ? (
+                          d.avg_score!.toFixed(3)
+                        ) : (
+                          <span className="badge badge-neutral text-[10px]">未启用</span>
+                        )}
+                      </td>
+                      {enabled && (
+                        <>
+                          <td className="py-sm text-right font-mono tabular-nums">
+                            {d.pass_rate == null ? "—" : `${(d.pass_rate * 100).toFixed(1)}%`}
+                          </td>
+                          <td className="py-sm text-right font-mono tabular-nums text-ink-2">
+                            {d.sample_count}
+                          </td>
+                          <td className="py-sm text-right font-mono text-xs tabular-nums text-ink-3">
+                            {d.min_score == null
+                              ? "—"
+                              : `${d.min_score.toFixed(2)} / ${d.max_score?.toFixed(2) ?? "—"}`}
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

@@ -144,8 +144,42 @@ export default async function DimensionDetailPage({
 
 function DimensionView({ slice, runId }: { slice: DimensionSliceResponse; runId: number }) {
   const { stats, histogram, top_badcases, issue_clusters, prompt_version } = slice;
+  // 未启用判定：本次评测无任何 applicable 样本（API 也会让 avg_score=null）
+  const isDisabled = stats.applicable_count === 0 && stats.avg_score == null;
+  if (isDisabled) {
+    return (
+      <section className="border-t border-rule pt-3xl text-center">
+        <div className="mx-auto flex max-w-[48ch] flex-col gap-md">
+          <span className="text-caption uppercase tracking-[0.08em] text-ink-3">未启用</span>
+          <p className="m-0 font-display text-h2 text-ink">本次评测未启用 {slice.dim_name}</p>
+          <p className="m-0 text-sm leading-relaxed text-ink-2">
+            新建评测时该维度未被勾选，所以没有产生任何分数 / 直方图 / badcase。
+            可在新建评测时勾选此维度并配置 prompt 后重新跑。
+          </p>
+          <div className="mt-md flex justify-center gap-xl text-sm">
+            <Link
+              href={`/eval-runs/${runId}`}
+              className="border-b border-rule pb-[1px] text-ink-2 transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
+            >
+              <span aria-hidden>←</span> 返回看板
+            </Link>
+            <Link
+              href={`/eval-runs/new`}
+              className="border-b border-accent pb-[1px] text-accent transition-colors duration-fast ease-out hover:border-ink hover:text-ink"
+            >
+              新建评测 <span aria-hidden>→</span>
+            </Link>
+          </div>
+        </div>
+      </section>
+    );
+  }
   const passing = (stats.avg_score ?? 0) >= 0.6;
   const heroColor = passing ? "var(--color-accent)" : "var(--color-warn)";
+  // 当所有 top_badcases.explanation 都为空时，整列隐藏（session-level prompt 不输出 per-row 解释）
+  const showExplanationCol = top_badcases.some(
+    (b) => b.explanation && b.explanation.trim() && b.explanation !== "—",
+  );
 
   return (
     <>
@@ -224,7 +258,9 @@ function DimensionView({ slice, runId }: { slice: DimensionSliceResponse; runId:
                   <th className="py-sm pr-md text-left font-normal">conv_id</th>
                   <th className="py-sm pr-md text-right font-normal">维度分</th>
                   <th className="py-sm pr-md text-right font-normal">加权分</th>
-                  <th className="py-sm text-left font-normal">解释</th>
+                  {showExplanationCol && (
+                    <th className="py-sm text-left font-normal">解释</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -245,13 +281,15 @@ function DimensionView({ slice, runId }: { slice: DimensionSliceResponse; runId:
                       </span>
                     </td>
                     <td className="py-sm pr-md text-right font-mono tabular-nums text-ink-2">{fmtScore(b.weighted_score)}</td>
-                    <td className="py-sm text-xs italic-display leading-relaxed text-ink-2">
-                      {b.explanation
-                        ? b.explanation.length > 80
-                          ? b.explanation.slice(0, 80) + "…"
-                          : b.explanation
-                        : "—"}
-                    </td>
+                    {showExplanationCol && (
+                      <td className="py-sm text-xs italic-display leading-relaxed text-ink-2">
+                        {b.explanation
+                          ? b.explanation.length > 80
+                            ? b.explanation.slice(0, 80) + "…"
+                            : b.explanation
+                          : "—"}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

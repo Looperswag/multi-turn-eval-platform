@@ -19,7 +19,7 @@ export function IssueClusterBar({ clusters }: { clusters: DimensionIssueCluster[
   if (!clusters.length) {
     return (
       <div className="py-xl text-center text-sm italic-display text-ink-3">
-        暂未在 explanation 中匹配到典型关键词。
+        本维度 prompt 未输出 explanation 字段（session-level prompt 通常不产生 per-row 解释）。
       </div>
     );
   }
