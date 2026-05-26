@@ -34,6 +34,34 @@ _redis = redis_sync.Redis.from_url(settings.redis_url, decode_responses=True)
 _PARSE_TTL_SECONDS = 1800  # 30 分钟
 _PARSE_KEY_PREFIX = "dataset_parse:"
 
+# 上传校验常量（M1.2 安全基线）
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+_ALLOWED_UPLOAD_MIMES = {
+    "application/json",
+    "text/plain",  # .json saved as txt / 浏览器猜成 plain
+    "text/csv",
+    "application/csv",
+    "application/vnd.ms-excel",  # .xls
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
+    "application/octet-stream",  # 浏览器对 xlsx 偶尔猜不出
+}
+
+
+def _validate_upload(file: UploadFile, file_bytes: bytes) -> None:
+    """Size + MIME 白名单守门。早拒绝大文件 / 非法类型，避免后续解析时 OOM 或被 zip-bomb 攻击。"""
+    if not file_bytes:
+        raise HTTPException(400, "empty file")
+    if len(file_bytes) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            413,
+            f"文件 {len(file_bytes) / 1024 / 1024:.1f} MB 超过上限 {_MAX_UPLOAD_BYTES // 1024 // 1024} MB",
+        )
+    if file.content_type and file.content_type not in _ALLOWED_UPLOAD_MIMES:
+        raise HTTPException(
+            415,
+            f"不支持的文件类型 {file.content_type}；仅接受 JSON / CSV / Excel",
+        )
+
 
 @router.get("", response_model=list[DatasetOut])
 def list_datasets(db: Session = Depends(get_db)):
@@ -208,8 +236,10 @@ async def upload_dataset(
     db: Session = Depends(get_db),
 ):
     """上传 JSON 评测集（mock_multi_turn_queries 同格式）。CSV/Excel 后续支持。"""
-    raw = (await file.read()).decode("utf-8")
+    file_bytes = await file.read()
+    _validate_upload(file, file_bytes)
     try:
+        raw = file_bytes.decode("utf-8")
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise HTTPException(400, f"invalid json: {exc}") from exc
@@ -366,15 +396,7 @@ async def parse_upload(
     把解析后的全量 rows 序列化为 JSON 暂存到 redis（TTL 30 分钟）。
     """
     file_bytes = await file.read()
-    if not file_bytes:
-        raise HTTPException(400, "empty file")
-    # P0: 30MB 上限防 OOM；前端已提示 ≤30MB，后端再守一道
-    _MAX_UPLOAD_BYTES = 30 * 1024 * 1024
-    if len(file_bytes) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            413,
-            f"文件 {len(file_bytes) / 1024 / 1024:.1f} MB 超过上限 30 MB；请拆分后重试",
-        )
+    _validate_upload(file, file_bytes)
 
     try:
         parsed = dataset_parser.parse_any(file_bytes, file.filename or "", format)

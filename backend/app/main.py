@@ -1,8 +1,13 @@
 """FastAPI 应用入口。"""
 import logging
 
-from fastapi import Depends, FastAPI
+import defusedxml
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 from app.core.config import settings
 from app.api import (
@@ -20,7 +25,16 @@ from app.api.deps import require_api_key
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
+# 防御 xlsx / xml 解析的 XXE / billion-laughs / quadratic-blowup 攻击。
+# openpyxl 走 stdlib 的 xml.etree，defuse_stdlib() 会 monkey-patch 让其默认安全。
+defusedxml.defuse_stdlib()
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["300/minute"])
+
 app = FastAPI(title="多轮对话机评平台 API", version="0.1.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,8 +46,9 @@ app.add_middleware(
 
 
 @app.get("/api/health")
-def health():
-    """Health endpoint 永远不需要鉴权（探活用）"""
+@limiter.exempt
+def health(request: Request):
+    """Health endpoint 永远不需要鉴权 + 不计入 rate-limit（探活用）"""
     return {"status": "ok"}
 
 

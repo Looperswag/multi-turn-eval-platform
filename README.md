@@ -67,6 +67,18 @@ curl -H "X-API-Key: <your-API_KEY>" http://localhost:8000/api/datasets
 
 **注意**：开启后浏览器侧 `<a href>` 直跳的 Excel/MD/PDF 导出会失败（navigation 不带 header）。临时方案：保持 disabled，或在反向代理层（nginx）做 IP 白名单替代 X-API-Key。后续 D 阶段会改为 fetch + Blob 下载。
 
+### 反向代理 / Ingress 建议（D 阶段安全基线）
+
+平台已开启全局 rate-limit（300 req/min/IP）+ 上传 size 限制 50 MB。如使用 nginx 反代：
+
+```nginx
+client_max_body_size 50m;        # 与后端 _MAX_UPLOAD_BYTES 对齐
+proxy_buffering off;             # SSE 流式响应不缓冲
+proxy_read_timeout 3600s;        # SSE 长连接
+```
+
+API key 比较已用 `secrets.compare_digest` 防 timing 攻击；xlsx 解析已通过 `defusedxml.defuse_stdlib()` 防 XXE / billion-laughs。
+
 ### 启动检查清单
 - [ ] `.env` 不在 git（已 .gitignore）
 - [ ] API_KEY 使用 32 字节随机字符串（避免 dev-key-change-me）

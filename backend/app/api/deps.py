@@ -1,3 +1,5 @@
+import secrets
+
 from fastapi import Header, HTTPException, status
 
 from app.core.config import settings
@@ -18,7 +20,8 @@ def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Ke
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="require_api_key enabled but api_key not configured",
         )
-    if x_api_key != settings.api_key:
+    # 用 compare_digest 而非 ==，避免 timing side-channel 推断 key
+    if not secrets.compare_digest(x_api_key or "", settings.api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid or missing X-API-Key",
