@@ -41,3 +41,8 @@ drawer-snapshot.md
 *.jpeg
 *.jpg
 skills-lock.json
+
+# --- 评审报告附带的截图保留入版本控制 ---
+!docs/reviews/screenshots/*.png
+!docs/reviews/screenshots/*.jpeg
+!docs/reviews/screenshots/*.jpg
