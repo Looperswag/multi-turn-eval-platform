@@ -46,7 +46,7 @@ export default async function EvalRunDashboardPage({ params }: { params: { id: s
     );
   }
 
-  const { run, dimension_summary, score_distribution } = dash;
+  const { run, dimension_summary, score_distribution, cost_summary } = dash;
   const score = run.weighted_score;
   const passed = score != null && score >= 0.6;
   const showProgress =
@@ -123,6 +123,56 @@ export default async function EvalRunDashboardPage({ params }: { params: { id: s
           initial={{ completed: run.completed, total: run.total, failed: run.failed }}
           status={run.status as "pending" | "running" | "success" | "partial" | "failed" | "cancelled"}
         />
+      )}
+
+      {/* ── Section · 成本（M1.5）─────────────────────────────────── */}
+      {cost_summary && cost_summary.total_calls > 0 && (
+        <section className="flex flex-col gap-lg">
+          <SectionHead
+            eyebrow="成本"
+            title="Token 消耗 · ¥ / $"
+            caption={`${cost_summary.total_calls} 次 judge 调用 · 每会话均价`}
+          />
+          <div className="grid grid-cols-1 gap-xl border-t border-rule pt-lg md:grid-cols-[auto_minmax(0,1fr)]">
+            <div className="flex flex-col gap-2xs">
+              <span className="text-caption uppercase tracking-[0.08em] text-ink-3">本次总成本</span>
+              <span
+                className="font-display tabular-nums leading-none text-ink"
+                style={{ fontSize: "var(--text-display-s)" }}
+              >
+                ¥{cost_summary.total_cost_cny.toFixed(2)}
+              </span>
+              <span className="font-mono text-xs tabular-nums text-ink-3">
+                ≈ ${cost_summary.total_cost_usd.toFixed(3)} · 每会话 ¥
+                {cost_summary.cost_per_session_cny.toFixed(4)}
+              </span>
+            </div>
+            <dl className="grid grid-cols-2 content-end gap-y-sm text-sm md:grid-cols-3 md:gap-x-xl">
+              <div className="flex flex-col gap-2xs">
+                <dt className="text-caption uppercase tracking-[0.08em] text-ink-3">prompt tokens</dt>
+                <dd className="m-0 font-mono tabular-nums text-h3 text-ink">
+                  {cost_summary.total_prompt_tokens.toLocaleString()}
+                </dd>
+              </div>
+              <div className="flex flex-col gap-2xs">
+                <dt className="text-caption uppercase tracking-[0.08em] text-ink-3">completion tokens</dt>
+                <dd className="m-0 font-mono tabular-nums text-h3 text-ink">
+                  {cost_summary.total_completion_tokens.toLocaleString()}
+                </dd>
+              </div>
+              <div className="flex flex-col gap-2xs">
+                <dt className="text-caption uppercase tracking-[0.08em] text-ink-3">维度分布</dt>
+                <dd className="m-0 flex flex-col gap-2xs font-mono text-xs tabular-nums text-ink-2">
+                  {cost_summary.breakdown_by_dim.map((d) => (
+                    <span key={d.dim_code}>
+                      {d.dim_code} · {d.calls} 次 · ¥{d.cost_cny.toFixed(3)}
+                    </span>
+                  ))}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </section>
       )}
 
       {/* ── Section · 六维 ─────────────────────────────────────── */}

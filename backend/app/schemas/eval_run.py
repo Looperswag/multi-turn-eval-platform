@@ -61,10 +61,29 @@ class DimensionSummary(BaseModel):
     mean_ci_high: float | None = None
 
 
+class CostBreakdownItem(BaseModel):
+    dim_code: str
+    calls: int
+    cost_cny: float
+    cost_usd: float
+
+
+class CostSummary(BaseModel):
+    total_calls: int
+    total_prompt_tokens: int
+    total_completion_tokens: int
+    total_cost_usd: float
+    total_cost_cny: float
+    cost_per_session_cny: float
+    breakdown_by_dim: list[CostBreakdownItem]
+
+
 class EvalRunDashboard(BaseModel):
     run: EvalRunOut
     dimension_summary: list[DimensionSummary]
     score_distribution: dict[str, int]  # bucket -> count
+    # M1.5: token + 成本汇总；历史 run 未埋点时 total_calls=0
+    cost_summary: CostSummary | None = None
 
 
 # ===== B.2 dimension slice =====

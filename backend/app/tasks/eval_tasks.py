@@ -23,6 +23,7 @@ from app.models import (
     BotRewrite,
     BotVersion,
     Conversation,
+    EvalCallCost,
     EvalCaseResult,
     EvalRun,
     EvalTurnResult,
@@ -35,6 +36,7 @@ from app.services.eval_engine import (
     ALL_EVALUATOR_CLASSES,
     PromptRenderer,
     build_judge_client,
+    set_cost_sink,
 )
 from app.services.scoring import (
     conversation_weighted_score,
@@ -113,6 +115,9 @@ def _evaluate_one_conversation(
     - case + turn_results 在本线程的事务里写完再 commit；如果失败回滚后再尝试写 error
     """
     db = SessionLocal()
+    # M1.5: 本线程的成本回收袋；evaluator 调用 judge 时按 dim_code 累积
+    cost_sink: list[dict] = []
+    set_cost_sink(cost_sink)
     try:
         conv = db.get(Conversation, conv_id)
         if not conv:
@@ -151,6 +156,20 @@ def _evaluate_one_conversation(
                         )
                     )
 
+            # M1.5: 把本 case 累积的成本写入 eval_call_cost
+            for cost in cost_sink:
+                db.add(
+                    EvalCallCost(
+                        eval_case_result_id=case.id,
+                        dimension_code=cost["dimension_code"],
+                        model_id=cost["model_id"],
+                        prompt_tokens=cost["prompt_tokens"],
+                        completion_tokens=cost["completion_tokens"],
+                        cost_usd=cost["cost_usd"],
+                        cost_cny=cost["cost_cny"],
+                    )
+                )
+
             weighted, lowest = conversation_weighted_score(dim_scores, weights=run_weights)
             case.weighted_score = weighted
             case.lowest_dim_code = lowest
@@ -185,6 +204,7 @@ def _evaluate_one_conversation(
                 "error": str(exc),
             }
     finally:
+        set_cost_sink(None)
         db.close()
 
 

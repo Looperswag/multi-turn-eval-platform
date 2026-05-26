@@ -10,14 +10,37 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 import traceback
 from abc import ABC, abstractmethod
 from typing import Any
 
 from app.core.config import settings
+from app.core.pricing import compute_cost
 
 logger = logging.getLogger(__name__)
+
+# M1.5：thread-local 成本回收 — 每个 worker 线程在 evaluate 前 set_cost_sink([])，
+# evaluate 后读取累积的 cost_record 写 DB。判官 client 保持 stateless，多线程共享。
+_thread_local = threading.local()
+
+
+def set_cost_sink(sink: list[dict] | None) -> None:
+    _thread_local.cost_sink = sink
+
+
+def get_cost_sink() -> list[dict] | None:
+    return getattr(_thread_local, "cost_sink", None)
+
+
+def set_dim_context(dim_code: str | None) -> None:
+    """Evaluator 在调用 _call 前设置自己的 dim_code，让 cost_record 带上来源维度。"""
+    _thread_local.dim_code = dim_code
+
+
+def get_dim_context() -> str | None:
+    return getattr(_thread_local, "dim_code", None)
 
 
 def extract_json(text: str) -> dict | None:
@@ -59,15 +82,35 @@ class BaseJudgeClient(ABC):
         self.timeout = timeout
 
     @abstractmethod
-    def _create_completion(self, messages: list[dict[str, str]]) -> str:
-        """Provider-specific 调用，返回原始文本。"""
+    def _create_completion(
+        self, messages: list[dict[str, str]]
+    ) -> tuple[str, int, int]:
+        """Provider-specific 调用，返回 (text, prompt_tokens, completion_tokens)。"""
+
+    def _record_cost(self, prompt_tokens: int, completion_tokens: int) -> None:
+        sink = get_cost_sink()
+        if sink is None:
+            return
+        cost_usd, cost_cny = compute_cost(self.model_id, prompt_tokens, completion_tokens)
+        sink.append(
+            {
+                "dimension_code": get_dim_context() or "unknown",
+                "model_id": self.model_id,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "cost_usd": cost_usd,
+                "cost_cny": cost_cny,
+            }
+        )
 
     def call(self, messages: list[dict[str, str]]) -> dict | None:
         for attempt in range(self.max_retries):
             try:
-                content = self._create_completion(messages)
+                content, prompt_tokens, completion_tokens = self._create_completion(messages)
                 result = extract_json(content)
                 if result is not None:
+                    # 仅在 JSON 解析成功的调用算入成本（失败重试不重复计费）
+                    self._record_cost(prompt_tokens, completion_tokens)
                     return result
                 logger.warning(
                     "judge[%s] attempt=%d returned non-JSON: %s",
@@ -111,13 +154,17 @@ class ArkJudgeClient(BaseJudgeClient):
             timeout=self.timeout,
         )
 
-    def _create_completion(self, messages: list[dict[str, str]]) -> str:
+    def _create_completion(self, messages: list[dict[str, str]]) -> tuple[str, int, int]:
         completion = self._client.chat.completions.create(
             model=self.model_id,
             messages=messages,
             temperature=self.temperature,
         )
-        return completion.choices[0].message.content
+        text = completion.choices[0].message.content
+        usage = getattr(completion, "usage", None)
+        prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+        completion_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
+        return text, prompt_tokens, completion_tokens
 
 
 class DeepSeekJudgeClient(BaseJudgeClient):
@@ -159,7 +206,7 @@ class DeepSeekJudgeClient(BaseJudgeClient):
         )
         self._max_tokens = max_tokens or settings.deepseek_max_tokens
 
-    def _create_completion(self, messages: list[dict[str, str]]) -> str:
+    def _create_completion(self, messages: list[dict[str, str]]) -> tuple[str, int, int]:
         # Anthropic 协议要求 system 与 messages 分离；把 OpenAI 风格的
         # role=system 抽出来作为顶层 system 参数。
         system_parts: list[str] = []
@@ -182,12 +229,16 @@ class DeepSeekJudgeClient(BaseJudgeClient):
             kwargs["system"] = "\n\n".join(system_parts)
 
         resp = self._client.messages.create(**kwargs)
+        # Anthropic usage 字段名是 input_tokens / output_tokens
+        usage = getattr(resp, "usage", None)
+        prompt_tokens = getattr(usage, "input_tokens", 0) if usage else 0
+        completion_tokens = getattr(usage, "output_tokens", 0) if usage else 0
         # 取首个 text block 的内容
         for block in resp.content or []:
             text = getattr(block, "text", None)
             if text:
-                return text
-        return ""
+                return text, prompt_tokens, completion_tokens
+        return "", prompt_tokens, completion_tokens
 
 
 SUPPORTED_PROVIDERS = {"ark", "deepseek"}  # anthropic/openai 暂未启用

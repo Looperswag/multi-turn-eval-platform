@@ -9,7 +9,13 @@ from .evaluators import (
     Dim5Evaluator,
     Dim6Evaluator,
 )
-from .judge_client import BaseJudgeClient, ArkJudgeClient, DeepSeekJudgeClient, build_judge_client
+from .judge_client import (
+    BaseJudgeClient,
+    ArkJudgeClient,
+    DeepSeekJudgeClient,
+    build_judge_client,
+    set_cost_sink,
+)
 from .prompt_renderer import PromptRenderer
 
 
@@ -63,6 +69,7 @@ __all__ = [
     "ArkJudgeClient",
     "DeepSeekJudgeClient",
     "build_judge_client",
+    "set_cost_sink",
     "PromptRenderer",
     "ALL_EVALUATOR_CLASSES",
 ]

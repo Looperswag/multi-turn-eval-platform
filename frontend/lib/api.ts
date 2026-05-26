@@ -55,10 +55,28 @@ export type DimensionSummary = {
   mean_ci_high: number | null;
 };
 
+export type CostBreakdownItem = {
+  dim_code: string;
+  calls: number;
+  cost_cny: number;
+  cost_usd: number;
+};
+
+export type CostSummary = {
+  total_calls: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_cost_usd: number;
+  total_cost_cny: number;
+  cost_per_session_cny: number;
+  breakdown_by_dim: CostBreakdownItem[];
+};
+
 export type EvalRunDashboard = {
   run: EvalRun;
   dimension_summary: DimensionSummary[];
   score_distribution: Record<string, number>;
+  cost_summary: CostSummary | null;
 };
 
 // ===== C.3 SSE live progress =====

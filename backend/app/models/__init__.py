@@ -6,6 +6,7 @@ from .eval_run import EvalRun, EvalCaseResult, EvalTurnResult
 from .annotation import HumanAnnotation, BadcaseTag
 from .comparison import Comparison
 from .regression_set import RegressionSet, RegressionSetItem
+from .eval_call_cost import EvalCallCost
 
 __all__ = [
     "Dataset",
@@ -23,4 +24,5 @@ __all__ = [
     "Comparison",
     "RegressionSet",
     "RegressionSetItem",
+    "EvalCallCost",
 ]

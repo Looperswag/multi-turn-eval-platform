@@ -17,7 +17,7 @@ import time
 from typing import Any
 
 from app.core.config import settings
-from .judge_client import BaseJudgeClient
+from .judge_client import BaseJudgeClient, set_dim_context
 from .prompt_renderer import PromptRenderer
 
 logger = logging.getLogger(__name__)
@@ -159,7 +159,12 @@ class BaseEvaluator:
 
     def _call(self, messages):
         time.sleep(self.request_interval_sec)
-        return self.judge_client.call(messages)
+        # M1.5：让本次调用产生的 cost_record 带上 dim_code
+        set_dim_context(self.dimension_code)
+        try:
+            return self.judge_client.call(messages)
+        finally:
+            set_dim_context(None)
 
     def _render(self, **ctx):
         return self.prompt_renderer.render(self.dimension_code, **ctx)
