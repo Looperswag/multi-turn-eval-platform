@@ -240,6 +240,17 @@ class Dim1Evaluator(BaseEvaluator):
 # 首轮无改写 → 模型按 prompt 自处理 overall_score=1（但参与平均；
 # 用户 prompt 明确说首轮算 1）。
 
+# M1.3：dim1 不评的边界类型——这些场景是 dim3（意图边界识别）/ dim6（用户纠错）的职责。
+# 把这些 turn 标 applicable=false，分数不计入 dim1 case-level 均值，
+# 避免一条"非导购拼接历史品类"的 case 同时被 dim1 + dim3 双扣。
+_DIM1_NOT_APPLICABLE_BOUNDARIES = {
+    "non_shopping",
+    "correction",
+    "emotion_negative",
+    "meaningless",
+}
+
+
 class Dim1SessionEvaluator(BaseEvaluator):
     dimension_name = "改写忠实性"
     dimension_code = "dim1"
@@ -279,24 +290,26 @@ class Dim1SessionEvaluator(BaseEvaluator):
             if not isinstance(ev, dict):
                 continue
             t_idx = ev.get("turn_index")
+            boundary_type = str(ev.get("boundary_type", "") or "")
+            applicable = boundary_type not in _DIM1_NOT_APPLICABLE_BOUNDARIES
             s = _pick_score(
                 ev, "overall_score", self.dimension_code,
                 context=f"session={meta_id} turn={t_idx}",
             )
-            if s is not None:
+            # 仅 applicable turn 入 case-level 均值；非 applicable 仍保留 score
+            # 以便 drawer 看到 judge 原始判断，但不参与 dim1 统计。
+            if applicable and s is not None:
                 scores.append(s)
             details.append({
                 "turn_index": t_idx,
                 "score": s,
+                "applicable": applicable,
                 "detail": ev,
             })
 
-        # 优先使用模型给出的 total_score（保留 prompt 原语义）；缺失则用本地均值
-        model_total = result.get("total_score")
-        if isinstance(model_total, (int, float)):
-            avg = round(float(model_total), 4)
-        else:
-            avg = round(sum(scores) / len(scores), 4) if scores else None
+        # M1.3 修复后，total_score 由本地基于 applicable turn 的均值计算，
+        # 不再使用 judge 给的 total_score（后者基于全部 turn，未排除非 applicable）。
+        avg = round(sum(scores) / len(scores), 4) if scores else None
 
         return {
             "dimension": self.dimension_name,
