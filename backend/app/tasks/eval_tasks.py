@@ -208,6 +208,155 @@ def _evaluate_one_conversation(
         db.close()
 
 
+# ====================================================================
+# M2.5: DRY 提取 — execute_eval_run 与 retry_failed_cases 共享的两段
+# ====================================================================
+
+
+def _build_eval_components(db: Session, run: EvalRun):
+    """构建 (judge_client, renderer, evaluators) 三件套。
+
+    返回 None 表示 judge_model 缺失（caller 负责打 failed + publish）。
+    PromptRenderer 模板语法错误会抛出，caller 用 try/except 处理。
+    """
+    judge_model = db.get(JudgeModel, run.judge_model_id)
+    if not judge_model:
+        return None
+    judge_client = build_judge_client(
+        judge_model.provider,
+        model_id=judge_model.model_id,
+        temperature=judge_model.temperature,
+    )
+    prompt_version_ids = run.judge_prompt_version_ids or {}
+    templates: dict[str, str] = {}
+    strategies: dict[str, str] = {}
+    for code in run.dimensions_selected:
+        pv_id = prompt_version_ids.get(code)
+        if pv_id is None:
+            continue
+        pv = db.get(JudgePromptVersion, pv_id)
+        if pv and pv.prompt_template:
+            templates[code] = pv.prompt_template
+            strategies[code] = pv.dimension_strategy or "per_turn"
+    renderer = PromptRenderer(templates, strategies=strategies)  # may raise
+    evaluators = {
+        code: ALL_EVALUATOR_CLASSES[code](judge_client, renderer)
+        for code in run.dimensions_selected
+        if code in ALL_EVALUATOR_CLASSES and code in templates
+    }
+    return judge_client, renderer, evaluators
+
+
+def _run_conversations_parallel(
+    *,
+    eval_run_id: int,
+    conversations: list,
+    evaluators: dict,
+    run_weights: dict | None,
+    bot_version_id: int,
+    db: Session,
+    run: EvalRun,
+    is_retry: bool = False,
+    completed_initial: int = 0,
+) -> dict:
+    """ThreadPoolExecutor 并行执行 _evaluate_one_conversation，
+    带 cancel 检测 + 增量 publish。
+
+    Returns: {"completed", "failed", "weighted_scores", "cancelled"}.
+    """
+    completed = completed_initial
+    failed = 0
+    weighted_scores: list[float | None] = []
+    if not conversations:
+        return {
+            "completed": completed,
+            "failed": failed,
+            "weighted_scores": weighted_scores,
+            "cancelled": False,
+        }
+
+    cancel_event = threading.Event()
+    publish_lock = threading.Lock()
+    start_time = time.monotonic()
+    max_workers = min(
+        max(int(getattr(run, "concurrency", 5) or 5), 1), len(conversations)
+    )
+
+    def _check_cancelled() -> bool:
+        db.refresh(run)
+        return run.status == "cancelled"
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_to_conv = {
+            pool.submit(
+                _evaluate_one_conversation,
+                eval_run_id,
+                conv.id,
+                bot_version_id,
+                evaluators,
+                run_weights,
+            ): conv
+            for conv in conversations
+        }
+        for fut in as_completed(future_to_conv):
+            conv = future_to_conv[fut]
+            if cancel_event.is_set() or _check_cancelled():
+                cancel_event.set()
+                continue
+            try:
+                result = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("future error for conv_id=%s", conv.id)
+                result = {
+                    "conv_id": conv.id,
+                    "status": "error",
+                    "case_id": None,
+                    "error": str(exc),
+                }
+            with publish_lock:
+                is_success = result["status"] == "success"
+                if is_success:
+                    completed += 1
+                    weighted_scores.append(result["weighted_score"])
+                else:
+                    failed += 1
+                run.completed = completed
+                run.failed = failed
+                db.commit()
+                elapsed = time.monotonic() - start_time
+                processed = completed + failed
+                avg = elapsed / max(processed, 1)
+                eta_seconds = round(avg * max(run.total - processed, 0))
+                payload = {
+                    "event": "case_completed" if is_success else "case_failed",
+                    "completed": completed,
+                    "failed": failed,
+                    "total": run.total,
+                    "eta_seconds": eta_seconds,
+                    "conversation_id": conv.id,
+                    "case_id": result.get("case_id"),
+                }
+                if is_success:
+                    payload["dim_scores"] = result.get("dim_scores")
+                else:
+                    payload["error_message"] = result.get("error")
+                if is_retry:
+                    payload["retry"] = True
+                _publish(eval_run_id, payload)
+
+    return {
+        "completed": completed,
+        "failed": failed,
+        "weighted_scores": weighted_scores,
+        "cancelled": cancel_event.is_set(),
+    }
+
+
+# ====================================================================
+# Celery tasks
+# ====================================================================
+
+
 @celery_app.task(bind=True, name="execute_eval_run")
 def execute_eval_run(self, eval_run_id: int) -> dict:
     db = SessionLocal()
@@ -219,38 +368,9 @@ def execute_eval_run(self, eval_run_id: int) -> dict:
         run.started_at = datetime.utcnow()
         db.commit()
 
-        judge_model = db.get(JudgeModel, run.judge_model_id)
-        if not judge_model:
-            run.status = "failed"
-            db.commit()
-            _publish(eval_run_id, {"event": "run_failed", "reason": "judge_model not found"})
-            return {"error": "judge_model not found"}
-
-        judge_client = build_judge_client(
-            judge_model.provider,
-            model_id=judge_model.model_id,
-            temperature=judge_model.temperature,
-        )
-
-        # A.3 改造：从 DB JudgePromptVersion 读模板（jinja2），交给 PromptRenderer。
-        # run.judge_prompt_version_ids 形如 {"dim1": 1, "dim2": 2, ...}
-        prompt_version_ids = run.judge_prompt_version_ids or {}
-        templates: dict[str, str] = {}
-        # P0-2：维度策略字段从 DB 显式带出，交给 PromptRenderer/Dispatcher 路由用
-        strategies: dict[str, str] = {}
-        for code in run.dimensions_selected:
-            pv_id = prompt_version_ids.get(code)
-            if pv_id is None:
-                continue
-            pv = db.get(JudgePromptVersion, pv_id)
-            if pv and pv.prompt_template:
-                templates[code] = pv.prompt_template
-                strategies[code] = pv.dimension_strategy or "per_turn"
-        # P0: PromptRenderer 构造时编译所有模板（eager），语法错误会抛 TemplateSyntaxError。
-        # 必须把 run 标 failed 后再抛，否则会卡在 running。
         try:
-            renderer = PromptRenderer(templates, strategies=strategies)
-        except Exception as exc:  # noqa: BLE001
+            components = _build_eval_components(db, run)
+        except Exception as exc:  # noqa: BLE001 — Jinja2 模板语法错误
             logger.exception("PromptRenderer init failed for run %s", eval_run_id)
             run.status = "failed"
             run.finished_at = datetime.utcnow()
@@ -260,12 +380,12 @@ def execute_eval_run(self, eval_run_id: int) -> dict:
                 {"event": "run_failed", "reason": f"prompt template error: {exc}"},
             )
             return {"error": "prompt template syntax error", "detail": str(exc)}
-
-        evaluators = {
-            code: ALL_EVALUATOR_CLASSES[code](judge_client, renderer)
-            for code in run.dimensions_selected
-            if code in ALL_EVALUATOR_CLASSES and code in templates
-        }
+        if components is None:
+            run.status = "failed"
+            db.commit()
+            _publish(eval_run_id, {"event": "run_failed", "reason": "judge_model not found"})
+            return {"error": "judge_model not found"}
+        _, _, evaluators = components
 
         # C.2：若关联了 regression_set，则仅评测集合内 conversation（与 dataset 取交集）
         if run.regression_set_id is not None:
@@ -312,116 +432,32 @@ def execute_eval_run(self, eval_run_id: int) -> dict:
 
         run.total = len(conversations) + len(existing_conv_ids)
         db.commit()
-        _publish(eval_run_id, {"event": "run_started", "total": run.total, "resume_from": len(existing_conv_ids)})
+        _publish(
+            eval_run_id,
+            {"event": "run_started", "total": run.total, "resume_from": len(existing_conv_ids)},
+        )
 
-        completed = len(existing_conv_ids)  # 已完成的 case 算入 progress
-        failed = 0
-        weighted_scores: list[float | None] = []
-        # W2：每个 run 可携带自定义 dimension_weights；NULL 时 fallback DEFAULT
-        run_weights = run.dimension_weights or None
-        start_time = time.monotonic()
+        stats = _run_conversations_parallel(
+            eval_run_id=eval_run_id,
+            conversations=conversations,
+            evaluators=evaluators,
+            run_weights=run.dimension_weights or None,
+            bot_version_id=run.bot_version_id,
+            db=db,
+            run=run,
+            is_retry=False,
+            completed_initial=len(existing_conv_ids),
+        )
+        completed = stats["completed"]
+        failed = stats["failed"]
 
-        # P0-1：并行评估 conversation。max_workers 取 EvalRun.concurrency
-        # (默认 5)，但不超过待评估数量。共享 evaluators / judge_client / renderer
-        # 是 stateless 的，跨线程安全。
-        max_workers = min(max(int(getattr(run, "concurrency", 5) or 5), 1), len(conversations) or 1)
-        cancel_event = threading.Event()
-        publish_lock = threading.Lock()
-        bot_version_id = run.bot_version_id  # snapshot 避免在线程里访问 ORM 属性
-
-        def _check_cancelled() -> bool:
-            db.refresh(run)
-            return run.status == "cancelled"
-
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            future_to_conv = {
-                pool.submit(
-                    _evaluate_one_conversation,
-                    eval_run_id,
-                    conv.id,
-                    bot_version_id,
-                    evaluators,
-                    run_weights,
-                ): conv
-                for conv in conversations
-            }
-
-            for fut in as_completed(future_to_conv):
-                conv = future_to_conv[fut]
-                # 取消优先：若已取消则尽快收尾（已提交的 future 仍跑完，但不再发布）
-                if cancel_event.is_set() or _check_cancelled():
-                    cancel_event.set()
-                    continue
-
-                try:
-                    result = fut.result()
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception("future error for conv_id=%s", conv.id)
-                    result = {
-                        "conv_id": conv.id,
-                        "status": "error",
-                        "case_id": None,
-                        "error": str(exc),
-                    }
-
-                with publish_lock:
-                    if result["status"] == "success":
-                        completed += 1
-                        weighted_scores.append(result["weighted_score"])
-                        run.completed = completed
-                        run.failed = failed
-                        db.commit()
-
-                        elapsed = time.monotonic() - start_time
-                        processed = completed + failed
-                        avg = elapsed / max(processed, 1)
-                        eta_seconds = round(avg * max(run.total - processed, 0))
-
-                        _publish(
-                            eval_run_id,
-                            {
-                                "event": "case_completed",
-                                "completed": completed,
-                                "failed": failed,
-                                "total": run.total,
-                                "eta_seconds": eta_seconds,
-                                "conversation_id": conv.id,
-                                "case_id": result.get("case_id"),
-                                "dim_scores": result.get("dim_scores"),
-                            },
-                        )
-                    else:
-                        failed += 1
-                        run.completed = completed
-                        run.failed = failed
-                        db.commit()
-
-                        elapsed = time.monotonic() - start_time
-                        processed = completed + failed
-                        avg = elapsed / max(processed, 1)
-                        eta_seconds = round(avg * max(run.total - processed, 0))
-
-                        _publish(
-                            eval_run_id,
-                            {
-                                "event": "case_failed",
-                                "completed": completed,
-                                "failed": failed,
-                                "total": run.total,
-                                "eta_seconds": eta_seconds,
-                                "conversation_id": conv.id,
-                                "case_id": result.get("case_id"),
-                                "error_message": result.get("error"),
-                            },
-                        )
-
-        if cancel_event.is_set():
+        if stats["cancelled"]:
             _publish(eval_run_id, {"event": "run_cancelled"})
             return {"status": "cancelled", "completed": completed}
 
         # finalize
-        run.weighted_score = run_overall_score(weighted_scores)
-        run.pass_rate = run_pass_rate(weighted_scores)
+        run.weighted_score = run_overall_score(stats["weighted_scores"])
+        run.pass_rate = run_pass_rate(stats["weighted_scores"])
         run.status = "success" if failed == 0 else ("partial" if completed > 0 else "failed")
         run.finished_at = datetime.utcnow()
         db.commit()
@@ -481,30 +517,9 @@ def retry_failed_cases(self, eval_run_id: int, conv_ids: list[int]) -> dict:
         run.finished_at = None
         db.commit()
 
-        # 构建评测组件（与 execute_eval_run 同）
-        judge_model = db.get(JudgeModel, run.judge_model_id)
-        if not judge_model:
-            run.status = "failed"
-            db.commit()
-            _publish(eval_run_id, {"event": "run_failed", "reason": "judge_model not found"})
-            return {"error": "judge_model not found"}
-
-        judge_client = build_judge_client(
-            judge_model.provider,
-            model_id=judge_model.model_id,
-            temperature=judge_model.temperature,
-        )
-        prompt_version_ids = run.judge_prompt_version_ids or {}
-        templates: dict[str, str] = {}
-        for code in run.dimensions_selected:
-            pv_id = prompt_version_ids.get(code)
-            if pv_id is None:
-                continue
-            pv = db.get(JudgePromptVersion, pv_id)
-            if pv and pv.prompt_template:
-                templates[code] = pv.prompt_template
+        # M2.5: 通过共享 helper 构建组件（templates 校验、judge_client 等）
         try:
-            renderer = PromptRenderer(templates)
+            components = _build_eval_components(db, run)
         except Exception as exc:  # noqa: BLE001
             logger.exception("PromptRenderer init failed for retry run %s", eval_run_id)
             run.status = "failed"
@@ -515,12 +530,12 @@ def retry_failed_cases(self, eval_run_id: int, conv_ids: list[int]) -> dict:
                 {"event": "run_failed", "reason": f"prompt template error: {exc}"},
             )
             return {"error": "prompt template syntax error", "detail": str(exc)}
-
-        evaluators = {
-            code: ALL_EVALUATOR_CLASSES[code](judge_client, renderer)
-            for code in run.dimensions_selected
-            if code in ALL_EVALUATOR_CLASSES and code in templates
-        }
+        if components is None:
+            run.status = "failed"
+            db.commit()
+            _publish(eval_run_id, {"event": "run_failed", "reason": "judge_model not found"})
+            return {"error": "judge_model not found"}
+        _, _, evaluators = components
 
         # 拉取要重跑的 conversations
         conversations = (
@@ -531,110 +546,33 @@ def retry_failed_cases(self, eval_run_id: int, conv_ids: list[int]) -> dict:
         )
         _publish(
             eval_run_id,
-            {"event": "run_started", "total": run.total, "retry": True, "retry_count": len(conversations)},
+            {
+                "event": "run_started",
+                "total": run.total,
+                "retry": True,
+                "retry_count": len(conversations),
+            },
         )
 
-        completed_delta = 0
-        failed_delta = 0
-        new_weighted_scores: list[float | None] = []
-        # W2：复用 run 的自定义权重；NULL fallback DEFAULT
-        run_weights = run.dimension_weights or None
-        start_time = time.monotonic()
+        # M2.5: 重试路径加 ThreadPoolExecutor — 与主路径性能对齐
+        completed_before = run.completed or 0
+        stats = _run_conversations_parallel(
+            eval_run_id=eval_run_id,
+            conversations=conversations,
+            evaluators=evaluators,
+            run_weights=run.dimension_weights or None,
+            bot_version_id=run.bot_version_id,
+            db=db,
+            run=run,
+            is_retry=True,
+            completed_initial=completed_before,
+        )
 
-        for conv in conversations:
-            db.refresh(run)
-            if run.status == "cancelled":
-                _publish(eval_run_id, {"event": "run_cancelled"})
-                return {"status": "cancelled"}
+        if stats["cancelled"]:
+            _publish(eval_run_id, {"event": "run_cancelled"})
+            return {"status": "cancelled"}
 
-            case: EvalCaseResult | None = None
-            case_dim_scores: dict[str, float | None] = {}
-            case_succeeded = False
-            case_error: str | None = None
-            try:
-                payload = _load_conversation_payload(db, conv, run.bot_version_id)
-                dim_scores: dict[str, float | None] = {}
-                full_results: dict[str, dict] = {}
-                case = EvalCaseResult(eval_run_id=eval_run_id, conversation_id=conv.id)
-                db.add(case)
-                db.flush()
-                for code, evaluator in evaluators.items():
-                    result = evaluator.evaluate(payload)
-                    score = result.get("score")
-                    dim_scores[code] = score
-                    setattr(case, f"{code}_score", score)
-                    full_results[code] = result
-                    for ts in result.get("turn_scores", []) or []:
-                        db.add(
-                            EvalTurnResult(
-                                eval_case_result_id=case.id,
-                                turn_index=ts.get("turn_index", 0),
-                                dimension_code=code,
-                                score=ts.get("score"),
-                                applicable=ts.get("applicable"),
-                                judge_raw_response=ts.get("detail"),
-                            )
-                        )
-                weighted, lowest = conversation_weighted_score(dim_scores, weights=run_weights)
-                case.weighted_score = weighted
-                case.lowest_dim_code = lowest
-                case.dim_results_full = full_results
-                new_weighted_scores.append(weighted)
-                completed_delta += 1
-                case_succeeded = True
-                case_dim_scores = dim_scores
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("retry case eval failed: conv_id=%s", conv.id)
-                failed_delta += 1
-                case_error = str(exc)
-                if case is not None:
-                    case.error = case_error
-            finally:
-                run.completed = (run.completed or 0) + (1 if case_succeeded else 0)
-                run.failed = (run.failed or 0) + (1 if case_error else 0)
-                db.commit()
-
-                elapsed = time.monotonic() - start_time
-                processed = completed_delta + failed_delta
-                if processed > 0:
-                    avg_per_case = elapsed / processed
-                    remaining = max(len(conversations) - processed, 0)
-                    eta_seconds: int | None = round(avg_per_case * remaining)
-                else:
-                    eta_seconds = None
-
-                if case_succeeded:
-                    _publish(
-                        eval_run_id,
-                        {
-                            "event": "case_completed",
-                            "completed": run.completed,
-                            "failed": run.failed,
-                            "total": run.total,
-                            "eta_seconds": eta_seconds,
-                            "conversation_id": conv.id,
-                            "case_id": case.id if case is not None else None,
-                            "dim_scores": case_dim_scores,
-                            "retry": True,
-                        },
-                    )
-                else:
-                    _publish(
-                        eval_run_id,
-                        {
-                            "event": "case_failed",
-                            "completed": run.completed,
-                            "failed": run.failed,
-                            "total": run.total,
-                            "eta_seconds": eta_seconds,
-                            "conversation_id": conv.id,
-                            "case_id": case.id if case is not None else None,
-                            "error_message": case_error,
-                            "retry": True,
-                        },
-                    )
-
-        # 重新计算整个 run 的总分（基于所有 success cases）
+        # 重新计算整个 run 的总分（基于所有 success cases，含未重试的历史）
         all_success = (
             db.query(EvalCaseResult)
             .filter(
@@ -646,8 +584,9 @@ def retry_failed_cases(self, eval_run_id: int, conv_ids: list[int]) -> dict:
         all_scores = [c.weighted_score for c in all_success]
         run.weighted_score = run_overall_score(all_scores)
         run.pass_rate = run_pass_rate(all_scores)
-        run.status = "success" if (run.failed or 0) == 0 else (
-            "partial" if (run.completed or 0) > 0 else "failed"
+        run.status = (
+            "success" if (run.failed or 0) == 0
+            else ("partial" if (run.completed or 0) > 0 else "failed")
         )
         run.finished_at = datetime.utcnow()
         db.commit()
@@ -661,11 +600,13 @@ def retry_failed_cases(self, eval_run_id: int, conv_ids: list[int]) -> dict:
                 "retry": True,
             },
         )
+        succeeded = stats["completed"] - completed_before
+        still_failed = stats["failed"]
         return {
             "status": run.status,
             "retried": len(conversations),
-            "succeeded": completed_delta,
-            "still_failed": failed_delta,
+            "succeeded": succeeded,
+            "still_failed": still_failed,
         }
     finally:
         db.close()
