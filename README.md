@@ -116,6 +116,25 @@ S3_BUCKET=my-bucket ./backend/scripts/backup.sh
 
 **未在范围内**：WAL 增量备份（POSTGRES + wal-g/barman 部署较重，待 S3 路径成熟后引入）。
 
+### 可观测性（M2.3）
+
+按需启动 Prometheus + Grafana profile：
+
+```bash
+docker compose --profile observability up -d prometheus grafana
+```
+
+- **API 指标端点**：`http://localhost:8000/metrics`（Prometheus 自动 scrape）
+- **Prometheus UI**：http://localhost:9090
+- **Grafana**：http://localhost:3001（admin/admin；自动加载 `eval-platform-core` 仪表盘）
+
+仪表盘三块核心面板：
+1. **API 延迟 p50/p95/p99**（按 handler）—— `histogram_quantile` over `http_request_duration_seconds_bucket`
+2. **Celery 队列深度** —— `eval_platform_celery_queue_depth`（API 后台每 10s 查 Redis LLEN）
+3. **SSE 活跃连接数** —— `eval_platform_sse_active_connections`（gauge inc/dec）
+
+日志已切到 `structlog` JSON 格式，便于 loki / fluentd 等聚合。
+
 ### 启动检查清单
 - [ ] `.env` 不在 git（已 .gitignore）
 - [ ] API_KEY 使用 32 字节随机字符串（避免 dev-key-change-me）
